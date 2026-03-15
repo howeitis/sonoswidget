@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+local.properties
+
+# Build outputs
+app/build/
+*.apk
+*.aab
+*.ap_
+
+# Kotlin
+*.class
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude session data
+.claude/
+
+# Misc scripts
+sonoswidget_env_check.sh
+
+# Unpacked working files
+unpacked_prd/

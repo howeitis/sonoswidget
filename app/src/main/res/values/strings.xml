@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SonosWidget</string>
+    <string name="widget_name">Sonos Control</string>
+    <string name="widget_description">Control your Sonos system from the home screen</string>
+
+    <!-- Playback controls -->
+    <string name="action_play">Play</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_skip_forward">Skip forward</string>
+    <string name="action_skip_back">Skip back</string>
+    <string name="action_shuffle">Shuffle</string>
+    <string name="action_repeat">Repeat</string>
+
+    <!-- Volume -->
+    <string name="volume_label">Volume: %1$d%%</string>
+    <string name="volume_decrease">Decrease volume</string>
+    <string name="volume_increase">Increase volume</string>
+
+    <!-- Speaker grouping -->
+    <string name="group_all">Group All</string>
+    <string name="speaker_grouped">%1$s, grouped</string>
+    <string name="speaker_ungrouped">%1$s, ungrouped</string>
+
+    <!-- Connection states -->
+    <string name="connection_local">Connected via local network</string>
+    <string name="connection_cloud">Connected via cloud</string>
+    <string name="connection_reconnecting">Reconnecting\u2026</string>
+    <string name="connection_offline">Offline</string>
+    <string name="connection_rate_limited">Rate Limited</string>
+
+    <!-- Empty / error states -->
+    <string name="no_speakers_found">No Sonos speakers found</string>
+    <string name="no_music_playing">No music playing</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_resume">Resume</string>
+    <string name="hint_check_wifi">Check that your phone is on the same Wi-Fi as your Sonos speakers</string>
+    <string name="network_permission_hint">Local control unavailable — grant network permission in Settings for faster response</string>
+
+    <!-- Foreground service notification -->
+    <string name="notification_channel_name">Sonos Playback</string>
+    <string name="notification_channel_description">Shows when SonosWidget is monitoring playback</string>
+    <string name="notification_title">SonosWidget: Connected</string>
+
+    <!-- Widget loading -->
+    <string name="widget_loading">Loading\u2026</string>
+
+    <!-- Widget picker preview -->
+    <string name="preview_track_name">Bohemian Rhapsody</string>
+    <string name="preview_artist_name">Queen</string>
+    <string name="preview_zone">Living Room · 45%</string>
+
+    <!-- Companion app -->
+    <string name="settings_title">SonosWidget Settings</string>
+    <string name="sign_in_sonos">Sign in with Sonos</string>
+    <string name="manual_ip_title">Manual Speaker IPs</string>
+    <string name="default_zone_title">Default Zone</string>
+    <string name="preferred_service_title">Preferred Music Service</string>
+    <string name="clear_cache">Clear Image Cache</string>
+    <string name="refresh_now">Refresh Now</string>
+</resources>

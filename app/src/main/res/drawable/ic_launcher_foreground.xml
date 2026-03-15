@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Speaker icon for SonosWidget -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,34 L54,74 L46,66 L38,66 L38,42 L46,42 L54,34 Z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M60,44 Q68,54 60,64"
+        android:strokeWidth="2.5"
+        android:strokeColor="#FFFFFF" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M64,38 Q76,54 64,70"
+        android:strokeWidth="2.5"
+        android:strokeColor="#FFFFFF" />
+</vector>
