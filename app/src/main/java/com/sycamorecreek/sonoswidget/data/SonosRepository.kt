@@ -15,11 +15,14 @@ import com.sycamorecreek.sonoswidget.sonos.local.QueueItemInfo
 import com.sycamorecreek.sonoswidget.sonos.local.TransportSettings
 import com.sycamorecreek.sonoswidget.sonos.local.ZoneGroup
 import com.sycamorecreek.sonoswidget.sonos.local.ZoneGroupMember
+import com.sycamorecreek.sonoswidget.sonos.local.FavoriteInfo
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.MusicSource
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
+import com.sycamorecreek.sonoswidget.widget.SourcePlaylist
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -111,6 +114,13 @@ class SonosRepository private constructor(
     private var cachedQueue: List<QueueItemInfo>? = null
     private var lastQueueTrackNum: Int = -1
     private var cachedTransportSettings: TransportSettings? = null
+
+    private var cachedMusicSources: List<MusicSource>? = null
+    private var cachedLocalFavorites: List<FavoriteInfo>? = null
+    private var lastSourceFetchMs: Long = 0L
+    private companion SourceTiming {
+        const val SOURCE_REFRESH_INTERVAL_MS = 300_000L // 5 minutes
+    }
 
     /** Whether we have a speaker target (local) or valid cloud session. */
     val isConnected: Boolean get() =
@@ -307,6 +317,20 @@ class SonosRepository private constructor(
 
         val queueItems = mapQueueItems(cachedQueue, currentTrackNum)
 
+        // Fetch music sources periodically (every 5 minutes)
+        val sourceNow = System.currentTimeMillis()
+        if (sourceNow - lastSourceFetchMs > SOURCE_REFRESH_INTERVAL_MS || cachedMusicSources == null) {
+            try {
+                val sources = fetchSourcesFromLocal()
+                if (sources.isNotEmpty()) {
+                    cachedMusicSources = sources
+                    lastSourceFetchMs = sourceNow
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Background source fetch failed: ${e.message}")
+            }
+        }
+
         var state = WidgetStateMapper.buildState(
             transportInfo = transportInfo,
             positionInfo = positionInfo,
@@ -315,7 +339,10 @@ class SonosRepository private constructor(
             activeZoneId = activeZoneId,
             transportSettings = cachedTransportSettings,
             connectionMode = activeConnectionMode
-        ).copy(queue = queueItems)
+        ).copy(
+            queue = queueItems,
+            availableSources = cachedMusicSources ?: emptyList()
+        )
 
         val artBitmap = AlbumArtLoader.loadAndCache(
             context = context,
@@ -627,6 +654,141 @@ class SonosRepository private constructor(
             } else zone
         }
         return currentState.copy(zones = updatedZones)
+    }
+
+    // ──────────────────────────────────────────────
+    // Music source management (Task 3.1)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Fetches available music sources (Sonos favorites grouped by service).
+     * Uses cloud API or local ContentDirectory:Browse depending on connection mode.
+     * Caches results for [SOURCE_REFRESH_INTERVAL_MS].
+     */
+    suspend fun fetchMusicSources(): List<MusicSource> {
+        val now = System.currentTimeMillis()
+        if (cachedMusicSources != null && now - lastSourceFetchMs < SOURCE_REFRESH_INTERVAL_MS) {
+            return cachedMusicSources!!
+        }
+
+        val sources = when (activeConnectionMode) {
+            ConnectionMode.CLOUD -> fetchSourcesFromCloud()
+            else -> fetchSourcesFromLocal()
+        }
+
+        if (sources.isNotEmpty()) {
+            cachedMusicSources = sources
+            lastSourceFetchMs = now
+        }
+
+        return sources
+    }
+
+    private suspend fun fetchSourcesFromCloud(): List<MusicSource> {
+        return try {
+            cloudController.getMusicSources()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch cloud music sources", e)
+            emptyList()
+        }
+    }
+
+    private suspend fun fetchSourcesFromLocal(): List<MusicSource> {
+        val ip = activeSpeakerIp ?: return emptyList()
+        val port = activeSpeakerPort
+
+        return try {
+            val favorites = controller.browseFavorites(ip, port) ?: return emptyList()
+            cachedLocalFavorites = favorites
+
+            if (favorites.isEmpty()) return emptyList()
+
+            // Group favorites by description (service hint) or use "Sonos Favorites"
+            val grouped = favorites.groupBy { fav ->
+                fav.description.takeIf { it.isNotBlank() } ?: "Sonos Favorites"
+            }
+
+            grouped.map { (serviceName, favs) ->
+                MusicSource(
+                    id = serviceName.lowercase().replace(" ", "_"),
+                    name = serviceName,
+                    playlists = favs.map { fav ->
+                        SourcePlaylist(
+                            id = fav.id,
+                            name = fav.title,
+                            imageUrl = fav.albumArtUri?.let { uri ->
+                                if (uri.startsWith("/")) "http://$ip:$port$uri" else uri
+                            },
+                            sourceId = serviceName.lowercase().replace(" ", "_")
+                        )
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch local favorites", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Plays a specific source playlist (favorite).
+     * Routes to cloud loadFavorite or local SOAP based on connection mode.
+     */
+    suspend fun playSourcePlaylist(playlistId: String): Boolean {
+        if (activeConnectionMode == ConnectionMode.CLOUD) {
+            val ok = cloudController.playFavorite(playlistId)
+            if (ok) {
+                kotlinx.coroutines.delay(500)
+                pollCloud()
+            }
+            return ok
+        }
+
+        // Local mode: find the favorite and play via SOAP
+        val ip = activeSpeakerIp ?: return false
+        val port = activeSpeakerPort
+        val favorite = cachedLocalFavorites?.find { it.id == playlistId } ?: return false
+
+        val ok = controller.playFavorite(ip, port, favorite.uri, favorite.metadata)
+        if (ok) {
+            kotlinx.coroutines.delay(500)
+            pollAndUpdate()
+        }
+        return ok
+    }
+
+    /**
+     * Toggles the source panel expanded/collapsed state.
+     * If expanding, fetches music sources if not cached.
+     */
+    suspend fun toggleSourcesPanel() {
+        val current = _widgetState.value
+        val expanding = !current.sourcesPanelExpanded
+
+        if (expanding) {
+            val sources = fetchMusicSources()
+            _widgetState.value = current.copy(
+                sourcesPanelExpanded = true,
+                availableSources = sources,
+                selectedSourceId = sources.firstOrNull()?.id
+            )
+        } else {
+            _widgetState.value = current.copy(
+                sourcesPanelExpanded = false,
+                selectedSourceId = null
+            )
+        }
+
+        WidgetStateStore.pushState(context, _widgetState.value)
+    }
+
+    /**
+     * Selects a specific music source to display its playlists.
+     */
+    suspend fun selectSource(sourceId: String) {
+        val current = _widgetState.value
+        _widgetState.value = current.copy(selectedSourceId = sourceId)
+        WidgetStateStore.pushState(context, _widgetState.value)
     }
 
     // ──────────────────────────────────────────────

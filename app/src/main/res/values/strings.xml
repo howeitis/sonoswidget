@@ -46,8 +46,12 @@
     <string name="section_speakers">Speakers</string>
     <string name="section_up_next">Up Next</string>
     <string name="section_source">Source</string>
+    <string name="section_sources">Sources</string>
     <string name="queue_empty">Queue is empty</string>
     <string name="no_source">No source</string>
+    <string name="no_sources_available">No sources available</string>
+    <string name="sources_loading">Loading sources\u2026</string>
+    <string name="open_in_sonos">Open in Sonos app</string>
 
     <!-- Widget loading -->
     <string name="widget_loading">Loading\u2026</string>

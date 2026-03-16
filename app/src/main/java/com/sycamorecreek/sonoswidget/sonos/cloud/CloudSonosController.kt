@@ -2,9 +2,11 @@ package com.sycamorecreek.sonoswidget.sonos.cloud
 
 import android.util.Log
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.MusicSource
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
+import com.sycamorecreek.sonoswidget.widget.SourcePlaylist
 import com.sycamorecreek.sonoswidget.widget.Track
 import com.sycamorecreek.sonoswidget.widget.Zone
 
@@ -142,6 +144,46 @@ class CloudSonosController(
             RepeatMode.ALL -> api.setPlayModes(token, groupId, repeat = true, repeatOne = false)
             RepeatMode.ONE -> api.setPlayModes(token, groupId, repeat = false, repeatOne = true)
         }
+    }
+
+    /**
+     * Fetches available music sources from Sonos favorites.
+     *
+     * Retrieves all favorites, groups them by service name, and returns
+     * a list of [MusicSource] objects with their associated playlists.
+     */
+    suspend fun getMusicSources(): List<MusicSource> {
+        val token = oAuthManager.ensureValidToken() ?: return emptyList()
+        val householdId = resolveHousehold(token) ?: return emptyList()
+
+        val favorites = api.getFavorites(token, householdId) ?: return emptyList()
+        if (favorites.isEmpty()) return emptyList()
+
+        // Group favorites by service name
+        val grouped = favorites.groupBy { it.service?.name ?: "Sonos" }
+
+        return grouped.map { (serviceName, favs) ->
+            MusicSource(
+                id = favs.first().service?.id ?: serviceName.lowercase().replace(" ", "_"),
+                name = serviceName,
+                playlists = favs.map { fav ->
+                    SourcePlaylist(
+                        id = fav.id,
+                        name = fav.name,
+                        imageUrl = fav.imageUrl,
+                        sourceId = fav.service?.id ?: serviceName.lowercase().replace(" ", "_")
+                    )
+                }
+            )
+        }
+    }
+
+    /**
+     * Loads a favorite for playback on the active group.
+     */
+    suspend fun playFavorite(favoriteId: String): Boolean {
+        val (token, groupId) = resolveTokenAndGroup() ?: return false
+        return api.loadFavorite(token, groupId, favoriteId)
     }
 
     /**

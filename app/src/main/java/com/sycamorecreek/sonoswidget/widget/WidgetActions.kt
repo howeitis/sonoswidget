@@ -275,6 +275,76 @@ class JumpToQueueItemAction : ActionCallback {
 }
 
 // ──────────────────────────────────────────────
+// Music source switching (Task 3.1)
+// ──────────────────────────────────────────────
+
+/** Parameter key for passing a source ID to [SelectSourceAction]. */
+val SOURCE_ID_KEY = ActionParameters.Key<String>("source_id")
+
+/** Parameter key for passing a playlist/favorite ID to [PlaySourcePlaylistAction]. */
+val PLAYLIST_ID_KEY = ActionParameters.Key<String>("playlist_id")
+
+/**
+ * Toggles the source panel between expanded and collapsed.
+ * When expanding, fetches available music sources if not cached.
+ */
+class ToggleSourcesPanelAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        Log.d(TAG, "ToggleSourcesPanelAction triggered")
+        HapticHelper.playClick(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.toggleSourcesPanel()
+    }
+}
+
+/**
+ * Selects a music source to display its playlists in the expanded source panel.
+ */
+class SelectSourceAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        val sourceId = parameters[SOURCE_ID_KEY]
+        if (sourceId == null) {
+            Log.w(TAG, "SelectSourceAction: missing source_id parameter")
+            return
+        }
+        Log.d(TAG, "SelectSourceAction triggered for source: $sourceId")
+        HapticHelper.playClick(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.selectSource(sourceId)
+    }
+}
+
+/**
+ * Plays a specific playlist/favorite from the source panel.
+ * Starts playback immediately.
+ */
+class PlaySourcePlaylistAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        val playlistId = parameters[PLAYLIST_ID_KEY]
+        if (playlistId == null) {
+            Log.w(TAG, "PlaySourcePlaylistAction: missing playlist_id parameter")
+            return
+        }
+        Log.d(TAG, "PlaySourcePlaylistAction triggered for playlist: $playlistId")
+        HapticHelper.playConfirm(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.playSourcePlaylist(playlistId)
+    }
+}
+
+// ──────────────────────────────────────────────
 // Deep link
 // ──────────────────────────────────────────────
 

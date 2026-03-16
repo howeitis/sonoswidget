@@ -164,6 +164,29 @@ data class QueueItemInfo(
 )
 
 // ──────────────────────────────────────────────
+// ContentDirectory — Favorites
+// ──────────────────────────────────────────────
+
+/**
+ * A single Sonos favorite, parsed from ContentDirectory:Browse on FV:2.
+ *
+ * @param id Favorite item ID (e.g., "FV:2/3")
+ * @param title Display name of the favorite
+ * @param albumArtUri Album art URI (may be relative to the speaker)
+ * @param description Description or type hint
+ * @param uri The content URI to load this favorite
+ * @param metadata The DIDL-Lite metadata for loading
+ */
+data class FavoriteInfo(
+    val id: String,
+    val title: String,
+    val albumArtUri: String?,
+    val description: String,
+    val uri: String,
+    val metadata: String
+)
+
+// ──────────────────────────────────────────────
 // Utility: time parsing
 // ──────────────────────────────────────────────
 

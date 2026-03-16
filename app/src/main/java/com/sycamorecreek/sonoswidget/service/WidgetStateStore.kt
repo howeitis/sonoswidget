@@ -6,9 +6,12 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.updateAppWidgetState
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.MusicSource
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
+import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidget
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
+import com.sycamorecreek.sonoswidget.widget.SourcePlaylist
 import com.sycamorecreek.sonoswidget.widget.Track
 import com.sycamorecreek.sonoswidget.widget.WidgetColorPalette
 import com.sycamorecreek.sonoswidget.widget.Zone
@@ -88,6 +91,11 @@ object WidgetStateStore {
             put("isReconnecting", state.isReconnecting)
             put("isRateLimited", state.isRateLimited)
             put("lastUpdatedMs", state.lastUpdatedMs)
+            put("availableSources", JSONArray().apply {
+                state.availableSources.forEach { put(serializeMusicSource(it)) }
+            })
+            put("sourcesPanelExpanded", state.sourcesPanelExpanded)
+            put("selectedSourceId", state.selectedSourceId ?: JSONObject.NULL)
         }.toString()
     }
 
@@ -108,10 +116,18 @@ object WidgetStateStore {
                     ConnectionMode.DISCONNECTED
                 },
                 shuffleEnabled = obj.optBoolean("shuffleEnabled", false),
+                repeatMode = try {
+                    RepeatMode.valueOf(obj.optString("repeatMode", "NONE"))
+                } catch (_: Exception) {
+                    RepeatMode.NONE
+                },
                 colorPalette = deserializeColorPalette(obj.optJSONObject("colorPalette")),
                 isReconnecting = obj.optBoolean("isReconnecting", false),
                 isRateLimited = obj.optBoolean("isRateLimited", false),
-                lastUpdatedMs = obj.optLong("lastUpdatedMs", 0L)
+                lastUpdatedMs = obj.optLong("lastUpdatedMs", 0L),
+                availableSources = deserializeMusicSourceList(obj.optJSONArray("availableSources")),
+                sourcesPanelExpanded = obj.optBoolean("sourcesPanelExpanded", false),
+                selectedSourceId = if (obj.isNull("selectedSourceId")) null else obj.optString("selectedSourceId")
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to deserialize widget state", e)
@@ -162,6 +178,54 @@ object WidgetStateStore {
         return (0 until arr.length()).map { i ->
             deserializeZone(arr.optJSONObject(i))
         }
+    }
+
+    private fun serializeMusicSource(source: MusicSource): JSONObject = JSONObject().apply {
+        put("id", source.id)
+        put("name", source.name)
+        put("playlists", JSONArray().apply {
+            source.playlists.forEach { put(serializeSourcePlaylist(it)) }
+        })
+    }
+
+    private fun serializeSourcePlaylist(playlist: SourcePlaylist): JSONObject = JSONObject().apply {
+        put("id", playlist.id)
+        put("name", playlist.name)
+        put("imageUrl", playlist.imageUrl ?: JSONObject.NULL)
+        put("sourceId", playlist.sourceId)
+    }
+
+    private fun deserializeMusicSourceList(arr: JSONArray?): List<MusicSource> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).map { i ->
+            deserializeMusicSource(arr.optJSONObject(i))
+        }
+    }
+
+    private fun deserializeMusicSource(obj: JSONObject?): MusicSource {
+        if (obj == null) return MusicSource()
+        return MusicSource(
+            id = obj.optString("id", ""),
+            name = obj.optString("name", ""),
+            playlists = deserializeSourcePlaylistList(obj.optJSONArray("playlists"))
+        )
+    }
+
+    private fun deserializeSourcePlaylistList(arr: JSONArray?): List<SourcePlaylist> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).map { i ->
+            deserializeSourcePlaylist(arr.optJSONObject(i))
+        }
+    }
+
+    private fun deserializeSourcePlaylist(obj: JSONObject?): SourcePlaylist {
+        if (obj == null) return SourcePlaylist()
+        return SourcePlaylist(
+            id = obj.optString("id", ""),
+            name = obj.optString("name", ""),
+            imageUrl = if (obj.isNull("imageUrl")) null else obj.optString("imageUrl"),
+            sourceId = obj.optString("sourceId", "")
+        )
     }
 
     private fun serializeColorPalette(palette: WidgetColorPalette): JSONObject =

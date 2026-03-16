@@ -152,7 +152,9 @@ fun ExpandedLayout(
             // ── Source bar ──
             SourceBarSection(
                 state = state,
+                textPrimary = textPrimary,
                 textSecondary = textSecondary,
+                accentColor = accentColor,
                 chipBg = chipBg,
                 sectionLabelColor = sectionLabelColor
             )
@@ -785,43 +787,259 @@ private fun QueueItemRow(
 }
 
 // ──────────────────────────────────────────────
-// Source bar (placeholder — Task 3.1)
+// Source bar — Music source switching (Task 3.1)
 // ──────────────────────────────────────────────
 
 @GlanceComposable
 @androidx.compose.runtime.Composable
 private fun SourceBarSection(
     state: SonosWidgetState,
+    textPrimary: Color,
     textSecondary: Color,
+    accentColor: Color,
     chipBg: Color,
     sectionLabelColor: Color
 ) {
-    Box(
-        modifier = GlanceModifier
-            .fillMaxWidth()
-            .cornerRadius(8.dp)
-            .background(chipBg)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        contentAlignment = Alignment.CenterStart
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "\uD83C\uDFB5",
-                style = TextStyle(fontSize = 14.sp)
-            )
-            Spacer(modifier = GlanceModifier.width(8.dp))
-            Text(
-                text = if (state.availableSources.isNotEmpty()) {
-                    state.availableSources.first().name
-                } else {
-                    "Source"
-                },
-                style = TextStyle(
-                    color = ColorProvider(textSecondary),
-                    fontSize = 12.sp
-                ),
-                maxLines = 1
+    Column(modifier = GlanceModifier.fillMaxWidth()) {
+        if (!state.sourcesPanelExpanded) {
+            // Collapsed: show source bar with tap to expand
+            Box(
+                modifier = GlanceModifier
+                    .fillMaxWidth()
+                    .cornerRadius(8.dp)
+                    .background(chipBg)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .clickable(actionRunCallback<ToggleSourcesPanelAction>()),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "\uD83C\uDFB5",
+                        style = TextStyle(fontSize = 14.sp)
+                    )
+                    Spacer(modifier = GlanceModifier.width(8.dp))
+                    Text(
+                        text = if (state.availableSources.isNotEmpty()) {
+                            state.availableSources.first().name
+                        } else {
+                            "Source"
+                        },
+                        style = TextStyle(
+                            color = ColorProvider(textSecondary),
+                            fontSize = 12.sp
+                        ),
+                        maxLines = 1
+                    )
+                    Spacer(modifier = GlanceModifier.defaultWeight())
+                    Text(
+                        text = "\u25BC", // ▼
+                        style = TextStyle(
+                            color = ColorProvider(textSecondary),
+                            fontSize = 10.sp
+                        )
+                    )
+                }
+            }
+        } else {
+            // Expanded: source section with services and playlists
+            ExpandedSourcePanel(
+                state = state,
+                textPrimary = textPrimary,
+                textSecondary = textSecondary,
+                accentColor = accentColor,
+                chipBg = chipBg,
+                sectionLabelColor = sectionLabelColor
             )
         }
+    }
+}
+
+/**
+ * Expanded source panel showing available services as chips
+ * and playlists for the selected service.
+ */
+@GlanceComposable
+@androidx.compose.runtime.Composable
+private fun ExpandedSourcePanel(
+    state: SonosWidgetState,
+    textPrimary: Color,
+    textSecondary: Color,
+    accentColor: Color,
+    chipBg: Color,
+    sectionLabelColor: Color
+) {
+    Column(modifier = GlanceModifier.fillMaxWidth()) {
+        // Header with collapse button
+        Row(
+            modifier = GlanceModifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Sources",
+                style = TextStyle(
+                    color = ColorProvider(sectionLabelColor),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+            Spacer(modifier = GlanceModifier.defaultWeight())
+            Box(
+                modifier = GlanceModifier
+                    .size(28.dp)
+                    .clickable(actionRunCallback<ToggleSourcesPanelAction>()),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "\u25B2", // ▲
+                    style = TextStyle(
+                        color = ColorProvider(textSecondary),
+                        fontSize = 10.sp
+                    )
+                )
+            }
+        }
+
+        Spacer(modifier = GlanceModifier.height(6.dp))
+
+        if (state.availableSources.isEmpty()) {
+            Box(
+                modifier = GlanceModifier
+                    .fillMaxWidth()
+                    .cornerRadius(8.dp)
+                    .background(chipBg)
+                    .padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "No sources available",
+                    style = TextStyle(
+                        color = ColorProvider(textSecondary),
+                        fontSize = 12.sp
+                    )
+                )
+            }
+        } else {
+            // Service chips row
+            Row(
+                modifier = GlanceModifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                state.availableSources.take(4).forEachIndexed { index, source ->
+                    if (index > 0) {
+                        Spacer(modifier = GlanceModifier.width(6.dp))
+                    }
+                    val isSelected = source.id == state.selectedSourceId
+                    Box(
+                        modifier = GlanceModifier
+                            .cornerRadius(20.dp)
+                            .background(if (isSelected) accentColor else chipBg)
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                            .clickable(
+                                actionRunCallback<SelectSourceAction>(
+                                    actionParametersOf(SOURCE_ID_KEY to source.id)
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = source.name.take(14),
+                            style = TextStyle(
+                                color = ColorProvider(
+                                    if (isSelected) textPrimary else textSecondary
+                                ),
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            ),
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = GlanceModifier.height(8.dp))
+
+            // Playlists for the selected source
+            val selectedSource = state.availableSources.find {
+                it.id == state.selectedSourceId
+            } ?: state.availableSources.firstOrNull()
+
+            if (selectedSource != null && selectedSource.playlists.isNotEmpty()) {
+                LazyColumn(
+                    modifier = GlanceModifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .cornerRadius(8.dp)
+                        .background(chipBg)
+                        .padding(8.dp)
+                ) {
+                    items(selectedSource.playlists.take(10)) { playlist ->
+                        PlaylistItemRow(
+                            playlist = playlist,
+                            textPrimary = textPrimary,
+                            textSecondary = textSecondary
+                        )
+                    }
+                }
+            } else {
+                Box(
+                    modifier = GlanceModifier
+                        .fillMaxWidth()
+                        .cornerRadius(8.dp)
+                        .background(chipBg)
+                        .padding(12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No playlists",
+                        style = TextStyle(
+                            color = ColorProvider(textSecondary),
+                            fontSize = 12.sp
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A single tappable playlist row in the source panel.
+ * Tapping starts playback of that playlist/favorite.
+ */
+@GlanceComposable
+@androidx.compose.runtime.Composable
+private fun PlaylistItemRow(
+    playlist: SourcePlaylist,
+    textPrimary: Color,
+    textSecondary: Color
+) {
+    Row(
+        modifier = GlanceModifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable(
+                actionRunCallback<PlaySourcePlaylistAction>(
+                    actionParametersOf(PLAYLIST_ID_KEY to playlist.id)
+                )
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "\u25B6", // ▶
+            style = TextStyle(
+                color = ColorProvider(textSecondary),
+                fontSize = 10.sp
+            )
+        )
+        Spacer(modifier = GlanceModifier.width(8.dp))
+        Text(
+            text = playlist.name,
+            style = TextStyle(
+                color = ColorProvider(textPrimary),
+                fontSize = 12.sp
+            ),
+            maxLines = 1,
+            modifier = GlanceModifier.defaultWeight()
+        )
     }
 }

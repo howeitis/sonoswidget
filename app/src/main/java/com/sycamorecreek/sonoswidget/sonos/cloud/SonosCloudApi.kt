@@ -210,6 +210,73 @@ class SonosCloudApi(
         }
     }
 
+    // ── Favorites & Music Services ──────────────────
+
+    data class CloudFavorite(
+        val id: String,
+        val name: String,
+        val description: String,
+        val imageUrl: String?,
+        val service: CloudService?
+    )
+
+    data class CloudService(
+        val id: String,
+        val name: String
+    )
+
+    /**
+     * Lists all Sonos favorites in a household.
+     * GET /v1/households/{householdId}/favorites
+     */
+    suspend fun getFavorites(
+        token: String,
+        householdId: String
+    ): List<CloudFavorite>? = withContext(Dispatchers.IO) {
+        val json = get("$BASE_URL/households/$householdId/favorites", token)
+            ?: return@withContext null
+        try {
+            val items = json.optJSONArray("items") ?: return@withContext emptyList()
+            (0 until items.length()).map { i ->
+                val obj = items.getJSONObject(i)
+                val serviceObj = obj.optJSONObject("service")
+                CloudFavorite(
+                    id = obj.getString("id"),
+                    name = obj.optString("name", ""),
+                    description = obj.optString("description", ""),
+                    imageUrl = obj.optJSONObject("imageUrl")?.optString("url")
+                        ?: obj.optString("imageUrl", null),
+                    service = serviceObj?.let {
+                        CloudService(
+                            id = it.optString("id", ""),
+                            name = it.optString("name", "")
+                        )
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse favorites", e)
+            null
+        }
+    }
+
+    /**
+     * Loads (plays) a favorite on a group.
+     * POST /v1/groups/{groupId}/favorites
+     */
+    suspend fun loadFavorite(
+        token: String,
+        groupId: String,
+        favoriteId: String,
+        playOnCompletion: Boolean = true
+    ): Boolean {
+        val body = JSONObject().apply {
+            put("favoriteId", favoriteId)
+            put("playOnCompletion", playOnCompletion)
+        }.toString()
+        return postWithBody("$BASE_URL/groups/$groupId/favorites", token, body)
+    }
+
     // ── Control commands (POST) ─────────────────────
 
     suspend fun play(token: String, groupId: String): Boolean =

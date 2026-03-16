@@ -421,6 +421,126 @@ class SonosControlActions(
     }
 
     // ──────────────────────────────────────────────
+    // ContentDirectory — Favorites browsing
+    // ──────────────────────────────────────────────
+
+    /**
+     * Browses the Sonos Favorites (FV:2) via ContentDirectory:Browse.
+     *
+     * Returns up to [count] favorites starting at [startIndex].
+     * Each favorite includes its title, album art, and the URI/metadata
+     * needed to load it for playback.
+     */
+    suspend fun browseFavorites(
+        ip: String,
+        port: Int = 1400,
+        startIndex: Int = 0,
+        count: Int = 50
+    ): List<FavoriteInfo>? {
+        val xml = soapClient.invoke(
+            ip, port,
+            SonosSoapClient.Service.CONTENT_DIRECTORY,
+            "Browse",
+            listOf(
+                "ObjectID" to "FV:2",
+                "BrowseFlag" to "BrowseDirectChildren",
+                "Filter" to "*",
+                "StartingIndex" to startIndex.toString(),
+                "RequestedCount" to count.toString(),
+                "SortCriteria" to ""
+            )
+        ) ?: return null
+
+        return try {
+            val resultRaw = extractXmlValueGreedy(xml, "Result")
+            if (resultRaw.isNullOrBlank()) {
+                Log.d(TAG, "Favorites browse returned empty Result")
+                return emptyList()
+            }
+
+            val decoded = decodeXmlEntities(resultRaw)
+            parseFavoritesDidl(decoded)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse favorites browse response", e)
+            null
+        }
+    }
+
+    /**
+     * Loads a favorite for playback by setting the AVTransport URI.
+     *
+     * @param ip Speaker IP to play on (group coordinator)
+     * @param port Speaker port
+     * @param uri The content URI from the favorite
+     * @param metadata The DIDL-Lite metadata from the favorite
+     */
+    suspend fun playFavorite(
+        ip: String,
+        port: Int = 1400,
+        uri: String,
+        metadata: String
+    ): Boolean {
+        val setUri = invokeSimple(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT, "SetAVTransportURI",
+            listOf(
+                "InstanceID" to INSTANCE_ID,
+                "CurrentURI" to uri,
+                "CurrentURIMetaData" to metadata
+            )
+        )
+        if (!setUri) return false
+        return play(ip, port)
+    }
+
+    /**
+     * Parses DIDL-Lite XML from a favorites browse response into [FavoriteInfo] items.
+     */
+    private fun parseFavoritesDidl(didl: String): List<FavoriteInfo> {
+        val items = mutableListOf<FavoriteInfo>()
+        val itemPattern = Regex(
+            """<item\s+([^>]*)>(.*?)</item>""",
+            RegexOption.DOT_MATCHES_ALL
+        )
+
+        for (match in itemPattern.findAll(didl)) {
+            val itemAttrs = match.groupValues[1]
+            val itemBody = match.groupValues[2]
+            val id = extractXmlAttribute(itemAttrs, "id") ?: continue
+            val title = extractDidlValue(itemBody, "dc:title") ?: "Unknown"
+            val albumArtUri = extractDidlValue(itemBody, "upnp:albumArtURI")
+            val description = extractDidlValue(itemBody, "r:description")
+                ?: extractDidlValue(itemBody, "r:type")
+                ?: ""
+
+            // Extract the <res> element for the playback URI
+            val resPattern = Regex("""<res\s[^>]*>([^<]*)</res>""")
+            val uri = resPattern.find(itemBody)?.groupValues?.get(1)?.trim() ?: ""
+
+            // Extract the <r:resMD> element for metadata
+            val resMdPattern = Regex(
+                """<r:resMD>(.*?)</r:resMD>""",
+                RegexOption.DOT_MATCHES_ALL
+            )
+            val metadata = resMdPattern.find(itemBody)?.groupValues?.get(1)?.trim() ?: ""
+
+            items.add(
+                FavoriteInfo(
+                    id = id,
+                    title = title,
+                    albumArtUri = albumArtUri,
+                    description = description,
+                    uri = uri,
+                    metadata = metadata
+                )
+            )
+        }
+
+        Log.d(TAG, "Parsed ${items.size} favorite(s)")
+        return items
+    }
+
+    // ──────────────────────────────────────────────
     // ZoneGroupTopology — Zone & Group management
     // ──────────────────────────────────────────────
 
