@@ -4,9 +4,11 @@ import android.content.Context
 import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 /**
@@ -30,6 +32,10 @@ class SonosPreferences(private val context: Context) {
         private val KEY_ACTIVE_ZONE_NAME = stringPreferencesKey("active_zone_name")
         private val KEY_ACTIVE_SPEAKER_IP = stringPreferencesKey("active_speaker_ip")
         private val KEY_ACTIVE_SPEAKER_PORT = stringPreferencesKey("active_speaker_port")
+        private val KEY_MANUAL_SPEAKER_IPS = stringSetPreferencesKey("manual_speaker_ips")
+        private val KEY_DEFAULT_ZONE_ID = stringPreferencesKey("default_zone_id")
+        private val KEY_DEFAULT_ZONE_NAME = stringPreferencesKey("default_zone_name")
+        private val KEY_PREFERRED_SERVICE = stringPreferencesKey("preferred_service")
     }
 
     /**
@@ -85,5 +91,97 @@ class SonosPreferences(private val context: Context) {
             prefs.remove(KEY_ACTIVE_SPEAKER_PORT)
         }
         Log.d(TAG, "Cleared active speaker")
+    }
+
+    // ──────────────────────────────────────────────
+    // Manual speaker IPs (fallback when discovery fails)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Returns the set of manually configured speaker IPs.
+     */
+    suspend fun getManualIps(): Set<String> {
+        return context.sonosPrefsDataStore.data.first()[KEY_MANUAL_SPEAKER_IPS] ?: emptySet()
+    }
+
+    /**
+     * Saves a set of manually configured speaker IPs.
+     */
+    suspend fun saveManualIps(ips: Set<String>) {
+        context.sonosPrefsDataStore.edit { prefs ->
+            prefs[KEY_MANUAL_SPEAKER_IPS] = ips
+        }
+        Log.d(TAG, "Saved ${ips.size} manual IP(s)")
+    }
+
+    /**
+     * Adds a single manual speaker IP.
+     */
+    suspend fun addManualIp(ip: String) {
+        val current = getManualIps().toMutableSet()
+        current.add(ip)
+        saveManualIps(current)
+    }
+
+    /**
+     * Removes a single manual speaker IP.
+     */
+    suspend fun removeManualIp(ip: String) {
+        val current = getManualIps().toMutableSet()
+        current.remove(ip)
+        saveManualIps(current)
+    }
+
+    // ──────────────────────────────────────────────
+    // Default zone (user's preferred speaker/room)
+    // ──────────────────────────────────────────────
+
+    data class DefaultZone(val id: String, val name: String)
+
+    suspend fun getDefaultZone(): DefaultZone? {
+        val prefs = context.sonosPrefsDataStore.data.first()
+        val id = prefs[KEY_DEFAULT_ZONE_ID] ?: return null
+        return DefaultZone(
+            id = id,
+            name = prefs[KEY_DEFAULT_ZONE_NAME] ?: ""
+        )
+    }
+
+    suspend fun saveDefaultZone(id: String, name: String) {
+        context.sonosPrefsDataStore.edit { prefs ->
+            prefs[KEY_DEFAULT_ZONE_ID] = id
+            prefs[KEY_DEFAULT_ZONE_NAME] = name
+        }
+        Log.d(TAG, "Saved default zone: $name ($id)")
+    }
+
+    suspend fun clearDefaultZone() {
+        context.sonosPrefsDataStore.edit { prefs ->
+            prefs.remove(KEY_DEFAULT_ZONE_ID)
+            prefs.remove(KEY_DEFAULT_ZONE_NAME)
+        }
+        Log.d(TAG, "Cleared default zone")
+    }
+
+    // ──────────────────────────────────────────────
+    // Preferred music service
+    // ──────────────────────────────────────────────
+
+    suspend fun getPreferredService(): String? {
+        return context.sonosPrefsDataStore.data.first()[KEY_PREFERRED_SERVICE]
+    }
+
+    suspend fun savePreferredService(serviceId: String) {
+        context.sonosPrefsDataStore.edit { prefs ->
+            prefs[KEY_PREFERRED_SERVICE] = serviceId
+        }
+        Log.d(TAG, "Saved preferred service: $serviceId")
+    }
+
+    suspend fun clearPreferredService() {
+        context.sonosPrefsDataStore.edit { prefs ->
+            prefs.remove(KEY_PREFERRED_SERVICE)
+        }
+        Log.d(TAG, "Cleared preferred service")
     }
 }

@@ -34,7 +34,26 @@
         android:networkSecurityConfig="@xml/network_security_config">
 
         <!-- Companion app Activity (OAuth login, settings) -->
-        <!-- Will be added in Task 2.5 -->
+        <activity
+            android:name=".app.SonosCompanionActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.SonosWidget">
+            <!-- Main launcher entry -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- OAuth callback redirect: sonoswidget://callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="sonoswidget"
+                    android:host="callback" />
+            </intent-filter>
+        </activity>
 
         <!-- Playback polling service (Task 1.5) -->
         <service

@@ -69,6 +69,23 @@ data class MediaInfo(
     val metadata: TrackMetadata?
 )
 
+/**
+ * Response from AVTransport:GetTransportSettings.
+ *
+ * Sonos play modes combine shuffle and repeat into a single string:
+ *   - NORMAL            = no shuffle, no repeat
+ *   - REPEAT_ALL        = no shuffle, repeat all
+ *   - REPEAT_ONE        = no shuffle, repeat one
+ *   - SHUFFLE_NOREPEAT  = shuffle, no repeat
+ *   - SHUFFLE           = shuffle, repeat all
+ *   - SHUFFLE_REPEAT_ONE = shuffle, repeat one
+ *
+ * @param playMode Raw play mode string from Sonos
+ */
+data class TransportSettings(
+    val playMode: String
+)
+
 // ──────────────────────────────────────────────
 // RenderingControl responses
 // ──────────────────────────────────────────────
@@ -123,6 +140,27 @@ data class ZoneGroupMember(
     val ip: String,
     val port: Int = 1400,
     val isCoordinator: Boolean = false
+)
+
+// ──────────────────────────────────────────────
+// ContentDirectory responses
+// ──────────────────────────────────────────────
+
+/**
+ * A single item from the Sonos queue, parsed from ContentDirectory:Browse.
+ *
+ * @param position 1-based position in the queue
+ * @param title Track name
+ * @param artist Artist name
+ * @param album Album name
+ * @param albumArtUri Album art URI (may be relative to the speaker)
+ */
+data class QueueItemInfo(
+    val position: Int,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val albumArtUri: String?
 )
 
 // ──────────────────────────────────────────────

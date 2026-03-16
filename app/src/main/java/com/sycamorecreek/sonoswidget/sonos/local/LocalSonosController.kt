@@ -153,6 +153,14 @@ class LocalSonosController(
     suspend fun seek(ip: String, port: Int = 1400, positionMs: Long): Boolean =
         controlActions.seek(ip, port, positionMs)
 
+    /** Set the play mode (shuffle/repeat combination). */
+    suspend fun setPlayMode(ip: String, port: Int = 1400, playMode: String): Boolean =
+        controlActions.setPlayMode(ip, port, playMode)
+
+    /** Get the current transport settings (play mode). */
+    suspend fun getTransportSettings(ip: String, port: Int = 1400): TransportSettings? =
+        controlActions.getTransportSettings(ip, port)
+
     /** Get the current transport state (playing, paused, stopped). */
     suspend fun getTransportInfo(ip: String, port: Int = 1400): TransportInfo? =
         controlActions.getTransportInfo(ip, port)
@@ -184,6 +192,24 @@ class LocalSonosController(
     /** Get the full zone group topology (all speakers and groupings). */
     suspend fun getZoneGroupState(ip: String, port: Int = 1400): List<ZoneGroup>? =
         controlActions.getZoneGroupState(ip, port)
+
+    /** Seek to a specific track in the queue by 1-based position. */
+    suspend fun seekToTrack(ip: String, port: Int = 1400, trackNr: Int): Boolean =
+        controlActions.seekToTrack(ip, port, trackNr)
+
+    /** Browse the Sonos queue. Returns up to [count] items from [startIndex]. */
+    suspend fun browseQueue(
+        ip: String, port: Int = 1400, startIndex: Int = 0, count: Int = 20
+    ): List<QueueItemInfo>? =
+        controlActions.browseQueue(ip, port, startIndex, count)
+
+    /** Add a speaker to a group by targeting the coordinator's UUID. */
+    suspend fun addToGroup(ip: String, port: Int = 1400, coordinatorUuid: String): Boolean =
+        controlActions.addToGroup(ip, port, coordinatorUuid)
+
+    /** Remove a speaker from its group, making it standalone. */
+    suspend fun removeFromGroup(ip: String, port: Int = 1400): Boolean =
+        controlActions.removeFromGroup(ip, port)
 
     /**
      * Polls the full playback state in a single batch.

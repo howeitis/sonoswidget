@@ -5,10 +5,10 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
 import coil.ImageLoader
+import coil.disk.DiskCache
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import coil.size.Size
-import coil.transform.RoundedCornersTransformation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -28,11 +28,14 @@ import java.io.FileOutputStream
  *
  * PRD Note: Uses Coil raw ImageLoader API only, NOT Compose integration.
  */
+@OptIn(coil.annotation.ExperimentalCoilApi::class)
 object AlbumArtLoader {
 
     private const val TAG = "AlbumArtLoader"
     private const val ART_FILENAME = "album_art_current.webp"
     private const val ART_SIZE_PX = 240 // Target size for widget art (80dp × 3x density)
+    private const val DISK_CACHE_DIR = "image_cache"
+    private const val DISK_CACHE_MAX_SIZE = 50L * 1024 * 1024 // 50 MB per PRD
 
     // Track the last URL to avoid redundant fetches
     private var lastArtUrl: String? = null
@@ -43,6 +46,12 @@ object AlbumArtLoader {
     private fun getImageLoader(context: Context): ImageLoader {
         return imageLoader ?: ImageLoader.Builder(context.applicationContext)
             .crossfade(false)
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(File(context.cacheDir, DISK_CACHE_DIR))
+                    .maxSizeBytes(DISK_CACHE_MAX_SIZE)
+                    .build()
+            }
             .build()
             .also { imageLoader = it }
     }
@@ -119,6 +128,48 @@ object AlbumArtLoader {
         if (file.exists()) {
             file.delete()
         }
+    }
+
+    /**
+     * Returns the total size of the disk image cache in bytes.
+     * Includes both Coil's disk cache directory and the current art file.
+     */
+    fun getDiskCacheSize(context: Context): Long {
+        var total = 0L
+        val cacheDir = File(context.cacheDir, DISK_CACHE_DIR)
+        if (cacheDir.exists()) {
+            total += cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }
+        val file = artFile(context)
+        if (file.exists()) {
+            total += file.length()
+        }
+        return total
+    }
+
+    /**
+     * Clears all disk caches: Coil's image cache directory and the current art file.
+     * Also resets in-memory cached bitmap and URL tracking.
+     */
+    fun clearAllDiskCache(context: Context) {
+        // Clear in-memory state
+        lastArtUrl = null
+        cachedBitmap = null
+
+        // Clear Coil disk cache
+        imageLoader?.diskCache?.clear()
+        val cacheDir = File(context.cacheDir, DISK_CACHE_DIR)
+        if (cacheDir.exists()) {
+            cacheDir.deleteRecursively()
+        }
+
+        // Clear current art file
+        val file = artFile(context)
+        if (file.exists()) {
+            file.delete()
+        }
+
+        Log.d(TAG, "All disk caches cleared")
     }
 
     /**

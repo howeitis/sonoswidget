@@ -46,13 +46,13 @@ import androidx.glance.action.actionParametersOf
  * │ └──────┘  Zone · Vol%            │
  * └──────────────────────────────────┘
  *
- * Layout (multiple zones):
- * ┌──────────────────────────────────┐
- * │ ┌──────┐  Track Name             │
- * │ │ Art  │  Artist                  │
- * │ │      │  ⏮  ▶/⏸  ⏭   Vol%     │
- * │ └──────┘  [Room1] [Room2] [Room3]│
- * └──────────────────────────────────┘
+ * Layout (multiple zones — grouping mode):
+ * ┌──────────────────────────────────────┐
+ * │ ┌──────┐  Track Name                 │
+ * │ │ Art  │  Artist                      │
+ * │ │      │  ⏮  ▶/⏸  ⏭   Vol%         │
+ * │ └──────┘  [Room1] [Room2] [Room3] All│
+ * └──────────────────────────────────────┘
  *
  * Colors are driven by [WidgetColorPalette] extracted from album art
  * via ThemeExtractor. Falls back to static defaults when no art is available.
@@ -78,9 +78,15 @@ fun CompactLayout(
     val chipBg = parseHexColor(palette.chipBackground, Color(0xFF3E3E5E))
     val disabledColor = Color(0xFF555570)
 
-    // Show zone chips only when connected with 2+ zones (coordinators only)
-    val coordinatorZones = state.zones.filter { it.isGroupCoordinator }
-    val showZoneChips = !isDisconnected && coordinatorZones.size > 1
+    // Show zone chips when connected with 2+ zones
+    // Include active group members + other coordinators for grouping
+    val activeGroupId = state.activeZone.groupId
+    val activeGroupMembers = state.zones.filter { it.groupId == activeGroupId }
+    val otherCoordinators = state.zones.filter {
+        it.groupId != activeGroupId && it.isGroupCoordinator
+    }
+    val allDisplayZones = activeGroupMembers + otherCoordinators
+    val showZoneChips = !isDisconnected && allDisplayZones.size > 1
 
     Box(
         modifier = GlanceModifier
@@ -239,9 +245,11 @@ fun CompactLayout(
 
                         // Volume indicator (always shown when connected)
                         if (!isDisconnected) {
+                            val modeIcon = connectionModeIcon(state.connectionMode)
                             Text(
                                 text = if (showZoneChips) {
-                                    "${state.volume}%"
+                                    if (modeIcon.isNotEmpty()) "${state.volume}% $modeIcon"
+                                    else "${state.volume}%"
                                 } else {
                                     buildZoneLabel(state)
                                 },
@@ -256,7 +264,7 @@ fun CompactLayout(
                 }
             }
 
-            // ── Zone selector chip row (only with 2+ zones) ──
+            // ── Speaker grouping chip row (only with 2+ zones) ──
             if (showZoneChips) {
                 Spacer(modifier = GlanceModifier.height(6.dp))
 
@@ -264,29 +272,52 @@ fun CompactLayout(
                     modifier = GlanceModifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Show up to 4 zone chips to fit the compact width
-                    val visibleZones = coordinatorZones.take(4)
+                    // Show up to 4 grouping chips to fit the compact width
+                    val visibleZones = allDisplayZones.take(4)
                     visibleZones.forEachIndexed { index, zone ->
                         if (index > 0) {
                             Spacer(modifier = GlanceModifier.width(6.dp))
                         }
 
-                        val isActive = zone.id == state.activeZone.id
-                        ZoneChip(
+                        val isGrouped = zone.groupId == activeGroupId
+                        CompactGroupingChip(
                             zone = zone,
-                            isActive = isActive,
-                            activeBg = accentColor,
-                            inactiveBg = chipBg,
-                            activeText = textPrimary,
-                            inactiveText = textSecondary
+                            isGrouped = isGrouped,
+                            groupedBg = accentColor,
+                            ungroupedBg = chipBg,
+                            groupedText = textPrimary,
+                            ungroupedText = textSecondary
                         )
                     }
 
+                    // "All" chip when there are ungrouped speakers
+                    if (otherCoordinators.isNotEmpty()) {
+                        Spacer(modifier = GlanceModifier.width(6.dp))
+                        Box(
+                            modifier = GlanceModifier
+                                .cornerRadius(8.dp)
+                                .background(chipBg)
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .clickable(actionRunCallback<GroupAllAction>()),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "All",
+                                style = TextStyle(
+                                    color = ColorProvider(textSecondary),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                maxLines = 1
+                            )
+                        }
+                    }
+
                     // Overflow indicator if more zones than can be displayed
-                    if (coordinatorZones.size > 4) {
+                    if (allDisplayZones.size > 4) {
                         Spacer(modifier = GlanceModifier.width(4.dp))
                         Text(
-                            text = "+${coordinatorZones.size - 4}",
+                            text = "+${allDisplayZones.size - 4}",
                             style = TextStyle(
                                 color = ColorProvider(textSecondary),
                                 fontSize = 10.sp
@@ -300,39 +331,39 @@ fun CompactLayout(
 }
 
 /**
- * A single zone selector chip.
+ * A speaker grouping chip for the compact layout.
  *
- * Active zone uses accent background; inactive uses chipBackground.
- * Tapping switches the active zone via [SwitchZoneAction].
+ * Grouped speakers show accent background; ungrouped show chip background.
+ * Tapping toggles group membership via [ToggleGroupAction].
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
-private fun ZoneChip(
+private fun CompactGroupingChip(
     zone: Zone,
-    isActive: Boolean,
-    activeBg: Color,
-    inactiveBg: Color,
-    activeText: Color,
-    inactiveText: Color
+    isGrouped: Boolean,
+    groupedBg: Color,
+    ungroupedBg: Color,
+    groupedText: Color,
+    ungroupedText: Color
 ) {
     Box(
         modifier = GlanceModifier
             .cornerRadius(8.dp)
-            .background(if (isActive) activeBg else inactiveBg)
+            .background(if (isGrouped) groupedBg else ungroupedBg)
             .padding(horizontal = 8.dp, vertical = 4.dp)
             .clickable(
-                actionRunCallback<SwitchZoneAction>(
-                    actionParametersOf(ZONE_ID_KEY to zone.id)
+                actionRunCallback<ToggleGroupAction>(
+                    actionParametersOf(SPEAKER_UUID_KEY to zone.id)
                 )
             ),
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = zone.displayName.take(12), // Truncate long room names
+            text = zone.displayName.take(12),
             style = TextStyle(
-                color = ColorProvider(if (isActive) activeText else inactiveText),
+                color = ColorProvider(if (isGrouped) groupedText else ungroupedText),
                 fontSize = 11.sp,
-                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                fontWeight = if (isGrouped) FontWeight.Bold else FontWeight.Normal
             ),
             maxLines = 1
         )
@@ -340,18 +371,35 @@ private fun ZoneChip(
 }
 
 /**
- * Builds the zone + volume label: "Living Room · 45%"
+ * Builds the zone + volume label with connection mode icon: "Living Room · 45% ☁"
  */
 private fun buildZoneLabel(state: SonosWidgetState): String {
     val zoneName = state.activeZone.displayName.ifBlank { "Sonos" }
-    return "$zoneName \u00B7 ${state.volume}%"
+    val modeIcon = connectionModeIcon(state.connectionMode)
+    return if (modeIcon.isNotEmpty()) {
+        "$zoneName \u00B7 ${state.volume}% $modeIcon"
+    } else {
+        "$zoneName \u00B7 ${state.volume}%"
+    }
+}
+
+/**
+ * Returns a short icon string indicating the active connection mode.
+ */
+internal fun connectionModeIcon(mode: ConnectionMode): String {
+    return when (mode) {
+        ConnectionMode.LOCAL_SSDP, ConnectionMode.LOCAL_MDNS -> ""
+        ConnectionMode.LOCAL_MANUAL_IP -> "\uD83D\uDD17" // link
+        ConnectionMode.CLOUD -> "\u2601" // cloud
+        ConnectionMode.DISCONNECTED -> ""
+    }
 }
 
 /**
  * Parses a hex color string (#RRGGBB or #AARRGGBB) to a Compose Color.
  * Returns [fallback] on any parse error.
  */
-private fun parseHexColor(hex: String, fallback: Color): Color {
+internal fun parseHexColor(hex: String, fallback: Color): Color {
     return try {
         Color(android.graphics.Color.parseColor(hex))
     } catch (_: Exception) {

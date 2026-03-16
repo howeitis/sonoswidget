@@ -86,6 +86,42 @@ class PreviousTrackAction : ActionCallback {
 }
 
 // ──────────────────────────────────────────────
+// Shuffle & Repeat (Task 2.4)
+// ──────────────────────────────────────────────
+
+/**
+ * Toggles shuffle mode on/off.
+ */
+class ToggleShuffleAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        Log.d(TAG, "ToggleShuffleAction triggered")
+        HapticHelper.playClick(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.toggleShuffle()
+    }
+}
+
+/**
+ * Cycles repeat mode: NONE → ALL → ONE → NONE.
+ */
+class CycleRepeatAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        Log.d(TAG, "CycleRepeatAction triggered")
+        HapticHelper.playClick(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.cycleRepeatMode()
+    }
+}
+
+// ──────────────────────────────────────────────
 // Volume controls
 // ──────────────────────────────────────────────
 
@@ -153,6 +189,88 @@ class SwitchZoneAction : ActionCallback {
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
         repo.switchZone(zoneId)
+    }
+}
+
+// ──────────────────────────────────────────────
+// Speaker grouping (Task 2.2)
+// ──────────────────────────────────────────────
+
+/** Parameter key for passing a speaker UUID to group/ungroup actions. */
+val SPEAKER_UUID_KEY = ActionParameters.Key<String>("speaker_uuid")
+
+/**
+ * Toggles a speaker's membership in the active zone's group.
+ *
+ * If the speaker is already grouped with the active zone, it is ungrouped.
+ * Otherwise, it is added to the active zone's group.
+ */
+class ToggleGroupAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        val speakerUuid = parameters[SPEAKER_UUID_KEY]
+        if (speakerUuid == null) {
+            Log.w(TAG, "ToggleGroupAction: missing speaker_uuid parameter")
+            return
+        }
+        Log.d(TAG, "ToggleGroupAction triggered for speaker: $speakerUuid")
+        HapticHelper.playConfirm(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.toggleSpeakerGroup(speakerUuid)
+    }
+}
+
+/**
+ * Groups all discovered speakers into the active zone's group.
+ */
+class GroupAllAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        Log.d(TAG, "GroupAllAction triggered")
+        HapticHelper.playConfirm(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.groupAll()
+    }
+}
+
+// ──────────────────────────────────────────────
+// Queue navigation (Task 2.3)
+// ──────────────────────────────────────────────
+
+/** Parameter key for passing a 1-based track number to [JumpToQueueItemAction]. */
+val QUEUE_TRACK_NR_KEY = ActionParameters.Key<Int>("queue_track_nr")
+
+/**
+ * Jumps playback to a specific track in the queue.
+ *
+ * Usage in Glance composables:
+ * ```
+ * actionRunCallback<JumpToQueueItemAction>(
+ *     actionParametersOf(QUEUE_TRACK_NR_KEY to item.position)
+ * )
+ * ```
+ */
+class JumpToQueueItemAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        val trackNr = parameters[QUEUE_TRACK_NR_KEY]
+        if (trackNr == null) {
+            Log.w(TAG, "JumpToQueueItemAction: missing queue_track_nr parameter")
+            return
+        }
+        Log.d(TAG, "JumpToQueueItemAction triggered for track #$trackNr")
+        HapticHelper.playClick(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.playQueueItem(trackNr)
     }
 }
 

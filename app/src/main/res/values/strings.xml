@@ -42,6 +42,13 @@
     <string name="notification_channel_description">Shows when SonosWidget is monitoring playback</string>
     <string name="notification_title">SonosWidget: Connected</string>
 
+    <!-- Expanded layout sections -->
+    <string name="section_speakers">Speakers</string>
+    <string name="section_up_next">Up Next</string>
+    <string name="section_source">Source</string>
+    <string name="queue_empty">Queue is empty</string>
+    <string name="no_source">No source</string>
+
     <!-- Widget loading -->
     <string name="widget_loading">Loading\u2026</string>
 

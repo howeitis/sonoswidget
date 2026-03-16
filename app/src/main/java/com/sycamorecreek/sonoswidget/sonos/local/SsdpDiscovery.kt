@@ -183,8 +183,4 @@ class SsdpDiscovery {
         )
     }
 
-    private fun extractXmlValue(xml: String, tagName: String): String? {
-        val pattern = "<$tagName>([^<]+)</$tagName>"
-        return Regex(pattern).find(xml)?.groupValues?.get(1)?.trim()
-    }
 }

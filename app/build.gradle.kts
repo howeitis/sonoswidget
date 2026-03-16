@@ -84,6 +84,9 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.activity.compose)
 
+    // Custom Tabs (OAuth login flow)
+    implementation(libs.browser)
+
     // AndroidX Core
     implementation(libs.core.ktx)
     implementation(libs.lifecycle.runtime.ktx)

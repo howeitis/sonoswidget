@@ -2,11 +2,13 @@ package com.sycamorecreek.sonoswidget.service
 
 import com.sycamorecreek.sonoswidget.sonos.local.PositionInfo
 import com.sycamorecreek.sonoswidget.sonos.local.TransportInfo
+import com.sycamorecreek.sonoswidget.sonos.local.TransportSettings
 import com.sycamorecreek.sonoswidget.sonos.local.VolumeInfo
 import com.sycamorecreek.sonoswidget.sonos.local.ZoneGroup
 import com.sycamorecreek.sonoswidget.sonos.local.parseDurationToMs
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
+import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
 import com.sycamorecreek.sonoswidget.widget.Track
 import com.sycamorecreek.sonoswidget.widget.Zone
@@ -32,6 +34,7 @@ object WidgetStateMapper {
         volumeInfo: VolumeInfo?,
         zoneGroups: List<ZoneGroup>?,
         activeZoneId: String?,
+        transportSettings: TransportSettings? = null,
         connectionMode: ConnectionMode = ConnectionMode.LOCAL_SSDP
     ): SonosWidgetState {
         val playbackState = mapPlaybackState(transportInfo)
@@ -39,6 +42,8 @@ object WidgetStateMapper {
         val zones = mapZones(zoneGroups)
         val activeZone = resolveActiveZone(zones, activeZoneId)
         val volume = volumeInfo?.volume ?: 50
+        val shuffleEnabled = mapShuffleEnabled(transportSettings)
+        val repeatMode = mapRepeatMode(transportSettings)
 
         return SonosWidgetState(
             playbackState = playbackState,
@@ -46,6 +51,8 @@ object WidgetStateMapper {
             activeZone = activeZone,
             volume = volume,
             zones = zones,
+            shuffleEnabled = shuffleEnabled,
+            repeatMode = repeatMode,
             connectionMode = connectionMode,
             lastUpdatedMs = System.currentTimeMillis()
         )
@@ -136,5 +143,48 @@ object WidgetStateMapper {
 
         // Default to the first coordinator
         return zones.find { it.isGroupCoordinator } ?: zones.first()
+    }
+
+    /**
+     * Extracts shuffle state from the Sonos play mode.
+     *
+     * Play modes containing "SHUFFLE" indicate shuffle is enabled.
+     */
+    fun mapShuffleEnabled(settings: TransportSettings?): Boolean {
+        if (settings == null) return false
+        return settings.playMode.contains("SHUFFLE", ignoreCase = true)
+    }
+
+    /**
+     * Extracts repeat mode from the Sonos play mode.
+     *
+     * Mapping:
+     *   NORMAL / SHUFFLE_NOREPEAT → NONE
+     *   REPEAT_ALL / SHUFFLE      → ALL
+     *   REPEAT_ONE / SHUFFLE_REPEAT_ONE → ONE
+     */
+    fun mapRepeatMode(settings: TransportSettings?): RepeatMode {
+        if (settings == null) return RepeatMode.NONE
+        return when (settings.playMode) {
+            "REPEAT_ALL", "SHUFFLE" -> RepeatMode.ALL
+            "REPEAT_ONE", "SHUFFLE_REPEAT_ONE" -> RepeatMode.ONE
+            else -> RepeatMode.NONE
+        }
+    }
+
+    /**
+     * Computes the Sonos play mode string from shuffle and repeat state.
+     *
+     * This is the inverse of [mapShuffleEnabled] and [mapRepeatMode].
+     */
+    fun buildPlayMode(shuffle: Boolean, repeat: RepeatMode): String {
+        return when {
+            shuffle && repeat == RepeatMode.ALL -> "SHUFFLE"
+            shuffle && repeat == RepeatMode.ONE -> "SHUFFLE_REPEAT_ONE"
+            shuffle -> "SHUFFLE_NOREPEAT"
+            repeat == RepeatMode.ALL -> "REPEAT_ALL"
+            repeat == RepeatMode.ONE -> "REPEAT_ONE"
+            else -> "NORMAL"
+        }
     }
 }

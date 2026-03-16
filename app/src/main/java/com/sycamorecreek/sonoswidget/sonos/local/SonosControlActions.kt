@@ -67,6 +67,43 @@ class SonosControlActions(
             ))
 
     // ──────────────────────────────────────────────
+    // AVTransport — Play mode (shuffle/repeat)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Sets the play mode (combination of shuffle and repeat state).
+     *
+     * Valid Sonos play modes:
+     *   - NORMAL, REPEAT_ALL, REPEAT_ONE
+     *   - SHUFFLE_NOREPEAT, SHUFFLE, SHUFFLE_REPEAT_ONE
+     */
+    suspend fun setPlayMode(ip: String, port: Int = 1400, playMode: String): Boolean =
+        invokeSimple(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "SetPlayMode",
+            listOf("InstanceID" to INSTANCE_ID, "NewPlayMode" to playMode))
+
+    /**
+     * Gets the current transport settings including play mode.
+     * Returns null if the request fails.
+     */
+    suspend fun getTransportSettings(ip: String, port: Int = 1400): TransportSettings? {
+        val xml = soapClient.invoke(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT,
+            "GetTransportSettings",
+            listOf("InstanceID" to INSTANCE_ID)
+        ) ?: return null
+
+        return try {
+            TransportSettings(
+                playMode = extractXmlValue(xml, "PlayMode") ?: "NORMAL"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse GetTransportSettings", e)
+            null
+        }
+    }
+
+    // ──────────────────────────────────────────────
     // AVTransport — State queries
     // ──────────────────────────────────────────────
 
@@ -227,6 +264,161 @@ class SonosControlActions(
                 "Channel" to "Master",
                 "DesiredMute" to if (muted) "1" else "0"
             ))
+
+    // ──────────────────────────────────────────────
+    // AVTransport — Speaker grouping
+    // ──────────────────────────────────────────────
+
+    /**
+     * Adds a speaker to a group by setting its AVTransport URI to
+     * `x-rincon:<coordinatorUuid>`. The speaker will join the
+     * coordinator's group and play the same content in sync.
+     *
+     * @param ip IP of the speaker to be added (the "slave")
+     * @param port Port of the speaker to be added
+     * @param coordinatorUuid UUID of the group coordinator (e.g., "RINCON_xxx")
+     */
+    suspend fun addToGroup(
+        ip: String,
+        port: Int = 1400,
+        coordinatorUuid: String
+    ): Boolean = invokeSimple(
+        ip, port,
+        SonosSoapClient.Service.AV_TRANSPORT, "SetAVTransportURI",
+        listOf(
+            "InstanceID" to INSTANCE_ID,
+            "CurrentURI" to "x-rincon:$coordinatorUuid",
+            "CurrentURIMetaData" to ""
+        )
+    )
+
+    /**
+     * Removes a speaker from its current group, making it a standalone
+     * coordinator of its own group.
+     *
+     * @param ip IP of the speaker to ungroup
+     * @param port Port of the speaker to ungroup
+     */
+    suspend fun removeFromGroup(ip: String, port: Int = 1400): Boolean =
+        invokeSimple(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT,
+            "BecomeCoordinatorOfStandaloneGroup",
+            listOf("InstanceID" to INSTANCE_ID)
+        )
+
+    // ──────────────────────────────────────────────
+    // AVTransport — Queue navigation
+    // ──────────────────────────────────────────────
+
+    /**
+     * Seeks to a specific track in the queue by its 1-based position.
+     *
+     * Uses AVTransport:Seek with Unit=TRACK_NR, which causes the speaker
+     * to jump to that queue position and start playing.
+     *
+     * @param trackNr 1-based track number in the queue
+     */
+    suspend fun seekToTrack(ip: String, port: Int = 1400, trackNr: Int): Boolean =
+        invokeSimple(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Seek",
+            listOf(
+                "InstanceID" to INSTANCE_ID,
+                "Unit" to "TRACK_NR",
+                "Target" to trackNr.toString()
+            ))
+
+    // ──────────────────────────────────────────────
+    // ContentDirectory — Queue browsing
+    // ──────────────────────────────────────────────
+
+    /**
+     * Browses the Sonos queue (Q:0) via ContentDirectory:Browse.
+     *
+     * Returns up to [count] items starting at [startIndex].
+     * Each item is parsed from the DIDL-Lite response.
+     *
+     * @param startIndex 0-based index to start browsing from
+     * @param count Maximum number of items to return
+     */
+    suspend fun browseQueue(
+        ip: String,
+        port: Int = 1400,
+        startIndex: Int = 0,
+        count: Int = 20
+    ): List<QueueItemInfo>? {
+        val xml = soapClient.invoke(
+            ip, port,
+            SonosSoapClient.Service.CONTENT_DIRECTORY,
+            "Browse",
+            listOf(
+                "ObjectID" to "Q:0",
+                "BrowseFlag" to "BrowseDirectChildren",
+                "Filter" to "*",
+                "StartingIndex" to startIndex.toString(),
+                "RequestedCount" to count.toString(),
+                "SortCriteria" to ""
+            )
+        ) ?: return null
+
+        return try {
+            val resultRaw = extractXmlValueGreedy(xml, "Result")
+            if (resultRaw.isNullOrBlank()) {
+                Log.d(TAG, "Queue browse returned empty Result")
+                return emptyList()
+            }
+
+            val decoded = decodeXmlEntities(resultRaw)
+            parseQueueDidl(decoded, startIndex)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse queue browse response", e)
+            null
+        }
+    }
+
+    /**
+     * Parses DIDL-Lite XML from a queue browse response into [QueueItemInfo] items.
+     *
+     * Each `<item>` element in the DIDL-Lite response represents a queue entry:
+     * ```xml
+     * <item id="Q:0/1" ...>
+     *   <dc:title>Song Name</dc:title>
+     *   <dc:creator>Artist</dc:creator>
+     *   <upnp:album>Album</upnp:album>
+     *   <upnp:albumArtURI>/getaa?s=1&u=...</upnp:albumArtURI>
+     *   <res ...>x-file-cifs://...</res>
+     * </item>
+     * ```
+     */
+    private fun parseQueueDidl(didl: String, startIndex: Int): List<QueueItemInfo> {
+        val items = mutableListOf<QueueItemInfo>()
+        val itemPattern = Regex(
+            """<item\s[^>]*>(.*?)</item>""",
+            RegexOption.DOT_MATCHES_ALL
+        )
+
+        for ((index, match) in itemPattern.findAll(didl).withIndex()) {
+            val itemBody = match.groupValues[1]
+            val title = extractDidlValue(itemBody, "dc:title") ?: "Unknown"
+            val artist = extractDidlValue(itemBody, "dc:creator")
+                ?: extractDidlValue(itemBody, "upnp:artist")
+                ?: ""
+            val album = extractDidlValue(itemBody, "upnp:album") ?: ""
+            val albumArtUri = extractDidlValue(itemBody, "upnp:albumArtURI")
+
+            items.add(
+                QueueItemInfo(
+                    position = startIndex + index + 1, // 1-based
+                    title = title,
+                    artist = artist,
+                    album = album,
+                    albumArtUri = albumArtUri
+                )
+            )
+        }
+
+        Log.d(TAG, "Parsed ${items.size} queue item(s)")
+        return items
+    }
 
     // ──────────────────────────────────────────────
     // ZoneGroupTopology — Zone & Group management

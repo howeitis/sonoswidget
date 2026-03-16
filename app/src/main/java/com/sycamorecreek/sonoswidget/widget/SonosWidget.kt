@@ -59,8 +59,7 @@ class SonosWidget : GlanceAppWidget() {
             val size = LocalSize.current
             when {
                 size.height >= FULL_SIZE.height -> {
-                    // TODO: ExpandedLayout (Task 2.1)
-                    CompactLayout(state, albumArt)
+                    ExpandedLayout(state, albumArt)
                 }
                 size.height >= HALF_SIZE.height -> {
                     CompactLayout(state, albumArt)
