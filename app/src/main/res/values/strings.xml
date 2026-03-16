@@ -35,7 +35,17 @@
     <string name="action_retry">Retry</string>
     <string name="action_resume">Resume</string>
     <string name="hint_check_wifi">Check that your phone is on the same Wi-Fi as your Sonos speakers</string>
-    <string name="network_permission_hint">Local control unavailable — grant network permission in Settings for faster response</string>
+    <string name="network_permission_hint">Local control unavailable \u2014 grant network permission in Settings for faster response</string>
+    <string name="error_command_timeout">Command timed out \u2014 tap to retry</string>
+    <string name="error_command_failed">Command failed \u2014 tap to retry</string>
+    <string name="error_offline">No internet and no local network</string>
+    <string name="error_updating">Speaker is updating firmware\u2026</string>
+    <string name="error_rate_limited">Cloud API rate limited \u2014 retrying\u2026</string>
+    <string name="badge_reconnecting">Reconnecting\u2026</string>
+    <string name="badge_rate_limited">Rate Limited</string>
+    <string name="badge_updating">Updating\u2026</string>
+    <string name="badge_offline">Offline</string>
+    <string name="speaker_offline">%1$s, offline</string>
 
     <!-- Foreground service notification -->
     <string name="notification_channel_name">Sonos Playback</string>

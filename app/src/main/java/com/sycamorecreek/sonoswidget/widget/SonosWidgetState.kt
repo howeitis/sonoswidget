@@ -54,6 +54,14 @@ data class WidgetColorPalette(
     val chipBackground: String = "#3E3E5E"
 )
 
+/**
+ * Badge type displayed as a semi-transparent pill overlay on album art.
+ * Only one badge is shown at a time, prioritized by severity.
+ */
+enum class StatusBadgeType {
+    NONE, OFFLINE, RECONNECTING, RATE_LIMITED, UPDATING
+}
+
 data class SonosWidgetState(
     val playbackState: PlaybackState = PlaybackState.STOPPED,
     val currentTrack: Track = Track(),
@@ -68,5 +76,19 @@ data class SonosWidgetState(
     val colorPalette: WidgetColorPalette = WidgetColorPalette(),
     val isReconnecting: Boolean = false,
     val isRateLimited: Boolean = false,
+    val isOffline: Boolean = false,
+    val isUpdating: Boolean = false,
+    val errorMessage: String? = null,
+    val showPermissionHint: Boolean = false,
+    val offlineSpeakerIds: Set<String> = emptySet(),
     val lastUpdatedMs: Long = 0L
-)
+) {
+    /** Resolves the highest-priority badge to display on album art. */
+    val activeBadge: StatusBadgeType get() = when {
+        isOffline -> StatusBadgeType.OFFLINE
+        isUpdating -> StatusBadgeType.UPDATING
+        isRateLimited -> StatusBadgeType.RATE_LIMITED
+        isReconnecting -> StatusBadgeType.RECONNECTING
+        else -> StatusBadgeType.NONE
+    }
+}

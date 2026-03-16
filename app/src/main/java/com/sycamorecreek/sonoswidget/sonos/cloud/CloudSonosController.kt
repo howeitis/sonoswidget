@@ -160,6 +160,10 @@ class CloudSonosController(
     val isLoggedIn: Boolean
         get() = oAuthManager.isLoggedIn
 
+    /** True if the last cloud API call returned HTTP 429 (rate limited). */
+    val isRateLimited: Boolean
+        get() = api.lastResponseWasRateLimited
+
     // ── Private helpers ─────────────────────────────
 
     private suspend fun resolveHousehold(token: String): String? {

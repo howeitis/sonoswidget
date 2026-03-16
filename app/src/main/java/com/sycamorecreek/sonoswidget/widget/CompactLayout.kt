@@ -6,8 +6,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceComposable
 import androidx.glance.GlanceModifier
-import androidx.glance.Image
-import androidx.glance.ImageProvider
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.cornerRadius
@@ -15,7 +13,6 @@ import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
-import androidx.glance.layout.ContentScale
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxSize
@@ -24,9 +21,10 @@ import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
 import androidx.glance.layout.width
+import androidx.glance.semantics.contentDescription
+import androidx.glance.semantics.semantics
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
-import androidx.glance.text.TextAlign
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import androidx.glance.action.actionParametersOf
@@ -67,6 +65,7 @@ fun CompactLayout(
     albumArt: Bitmap? = null
 ) {
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
+    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating
     val hasTrack = state.currentTrack.name.isNotBlank()
     val palette = state.colorPalette
 
@@ -86,7 +85,7 @@ fun CompactLayout(
         it.groupId != activeGroupId && it.isGroupCoordinator
     }
     val allDisplayZones = activeGroupMembers + otherCoordinators
-    val showZoneChips = !isDisconnected && allDisplayZones.size > 1
+    val showZoneChips = !controlsDisabled && allDisplayZones.size > 1
 
     Box(
         modifier = GlanceModifier
@@ -96,41 +95,26 @@ fun CompactLayout(
         contentAlignment = Alignment.Center
     ) {
         Column(modifier = GlanceModifier.fillMaxWidth()) {
+
+            // ── Inline error banner (auto-dismissed after 5s by service) ──
+            if (state.errorMessage != null) {
+                InlineErrorBanner(state.errorMessage)
+                Spacer(modifier = GlanceModifier.height(6.dp))
+            }
+
             // ── Main content row: art + track info + controls ──
             Row(
                 modifier = GlanceModifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Album art — tappable to open Sonos app
-                Box(
-                    modifier = GlanceModifier
-                        .size(80.dp)
-                        .cornerRadius(12.dp)
-                        .background(chipBg)
-                        .clickable(actionRunCallback<OpenSonosAppAction>()),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (albumArt != null) {
-                        Image(
-                            provider = ImageProvider(albumArt),
-                            contentDescription = state.currentTrack.album.ifBlank {
-                                "Album art \u2014 tap to open Sonos"
-                            },
-                            modifier = GlanceModifier
-                                .size(80.dp)
-                                .cornerRadius(12.dp),
-                            contentScale = ContentScale.Crop
-                        )
-                    } else {
-                        Text(
-                            text = if (hasTrack) "\uD83C\uDFB5" else "\uD83D\uDD0A",
-                            style = TextStyle(
-                                fontSize = 28.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        )
-                    }
-                }
+                // Album art with pill badge overlay
+                AlbumArtWithBadge(
+                    albumArt = albumArt,
+                    state = state,
+                    size = 80.dp,
+                    chipBg = chipBg,
+                    hasTrack = hasTrack
+                )
 
                 Spacer(modifier = GlanceModifier.width(12.dp))
 
@@ -141,6 +125,7 @@ fun CompactLayout(
                     // Track name
                     Text(
                         text = when {
+                            state.isOffline -> "Offline"
                             isDisconnected -> "Searching for speakers\u2026"
                             hasTrack -> state.currentTrack.name
                             else -> "No music playing"
@@ -158,6 +143,9 @@ fun CompactLayout(
                     // Artist / subtitle
                     Text(
                         text = when {
+                            state.isOffline -> "No internet and no local network"
+                            state.isUpdating -> "Speaker is updating firmware\u2026"
+                            state.isRateLimited -> "Cloud API rate limited \u2014 retrying\u2026"
                             isDisconnected && state.isReconnecting -> "Reconnecting\u2026"
                             isDisconnected -> "Check Wi-Fi connection"
                             state.currentTrack.artist.isNotBlank() -> state.currentTrack.artist
@@ -170,40 +158,57 @@ fun CompactLayout(
                         maxLines = 1
                     )
 
-                    Spacer(modifier = GlanceModifier.height(8.dp))
+                    // ── Static progress bar (Task 3.5) ──
+                    if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
+                        Spacer(modifier = GlanceModifier.height(4.dp))
+                        StaticProgressBar(
+                            elapsedMs = state.currentTrack.elapsedMs,
+                            durationMs = state.currentTrack.durationMs,
+                            accentColor = accentColor,
+                            trackColor = chipBg,
+                            barHeight = 3.dp,
+                            showTimeLabels = false
+                        )
+                    }
+
+                    Spacer(modifier = GlanceModifier.height(6.dp))
 
                     // Transport controls row
                     Row(
                         modifier = GlanceModifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Previous
+                        // Previous (48dp touch target per PRD §7.1)
                         Box(
-                            modifier = if (isDisconnected) GlanceModifier
-                            else GlanceModifier.clickable(
-                                actionRunCallback<PreviousTrackAction>()
-                            ),
+                            modifier = GlanceModifier.size(48.dp)
+                                .semantics { contentDescription = "Previous track" }
+                                .let { mod ->
+                                    if (controlsDisabled) mod
+                                    else mod.clickable(actionRunCallback<PreviousTrackAction>())
+                                },
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = "\u23EE",
                                 style = TextStyle(
                                     color = ColorProvider(
-                                        if (isDisconnected) disabledColor else textPrimary
+                                        if (controlsDisabled) disabledColor else textPrimary
                                     ),
                                     fontSize = 18.sp
                                 )
                             )
                         }
 
-                        Spacer(modifier = GlanceModifier.width(16.dp))
-
-                        // Play/Pause toggle
+                        // Play/Pause toggle (48dp touch target)
+                        val playPauseLabel = if (state.playbackState == PlaybackState.PLAYING)
+                            "Pause playback" else "Play"
                         Box(
-                            modifier = if (isDisconnected) GlanceModifier
-                            else GlanceModifier.clickable(
-                                actionRunCallback<PlayPauseAction>()
-                            ),
+                            modifier = GlanceModifier.size(48.dp)
+                                .semantics { contentDescription = playPauseLabel }
+                                .let { mod ->
+                                    if (controlsDisabled) mod
+                                    else mod.clickable(actionRunCallback<PlayPauseAction>())
+                                },
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
@@ -213,28 +218,28 @@ fun CompactLayout(
                                 },
                                 style = TextStyle(
                                     color = ColorProvider(
-                                        if (isDisconnected) disabledColor else textPrimary
+                                        if (controlsDisabled) disabledColor else textPrimary
                                     ),
                                     fontSize = 22.sp
                                 )
                             )
                         }
 
-                        Spacer(modifier = GlanceModifier.width(16.dp))
-
-                        // Next
+                        // Next (48dp touch target per PRD §7.1)
                         Box(
-                            modifier = if (isDisconnected) GlanceModifier
-                            else GlanceModifier.clickable(
-                                actionRunCallback<NextTrackAction>()
-                            ),
+                            modifier = GlanceModifier.size(48.dp)
+                                .semantics { contentDescription = "Next track" }
+                                .let { mod ->
+                                    if (controlsDisabled) mod
+                                    else mod.clickable(actionRunCallback<NextTrackAction>())
+                                },
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = "\u23ED",
                                 style = TextStyle(
                                     color = ColorProvider(
-                                        if (isDisconnected) disabledColor else textPrimary
+                                        if (controlsDisabled) disabledColor else textPrimary
                                     ),
                                     fontSize = 18.sp
                                 )
@@ -244,7 +249,7 @@ fun CompactLayout(
                         Spacer(modifier = GlanceModifier.defaultWeight())
 
                         // Volume indicator (always shown when connected)
-                        if (!isDisconnected) {
+                        if (!controlsDisabled) {
                             val modeIcon = connectionModeIcon(state.connectionMode)
                             Text(
                                 text = if (showZoneChips) {
@@ -280,13 +285,16 @@ fun CompactLayout(
                         }
 
                         val isGrouped = zone.groupId == activeGroupId
+                        val isSpeakerOffline = zone.id in state.offlineSpeakerIds
                         CompactGroupingChip(
                             zone = zone,
                             isGrouped = isGrouped,
+                            isSpeakerOffline = isSpeakerOffline,
                             groupedBg = accentColor,
                             ungroupedBg = chipBg,
                             groupedText = textPrimary,
-                            ungroupedText = textSecondary
+                            ungroupedText = textSecondary,
+                            offlineColor = disabledColor
                         )
                     }
 
@@ -298,6 +306,7 @@ fun CompactLayout(
                                 .cornerRadius(8.dp)
                                 .background(chipBg)
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .semantics { contentDescription = "Group all speakers" }
                                 .clickable(actionRunCallback<GroupAllAction>()),
                             contentAlignment = Alignment.Center
                         ) {
@@ -326,6 +335,12 @@ fun CompactLayout(
                     }
                 }
             }
+
+            // ── Permission hint (one-time, shown when local network denied) ──
+            if (state.showPermissionHint) {
+                Spacer(modifier = GlanceModifier.height(6.dp))
+                PermissionHintBanner(textSecondary, chipBg)
+            }
         }
     }
 }
@@ -334,6 +349,7 @@ fun CompactLayout(
  * A speaker grouping chip for the compact layout.
  *
  * Grouped speakers show accent background; ungrouped show chip background.
+ * Offline speakers are grayed out and not tappable.
  * Tapping toggles group membership via [ToggleGroupAction].
  */
 @GlanceComposable
@@ -341,29 +357,51 @@ fun CompactLayout(
 private fun CompactGroupingChip(
     zone: Zone,
     isGrouped: Boolean,
+    isSpeakerOffline: Boolean,
     groupedBg: Color,
     ungroupedBg: Color,
     groupedText: Color,
-    ungroupedText: Color
+    ungroupedText: Color,
+    offlineColor: Color
 ) {
+    val bg = when {
+        isSpeakerOffline -> ungroupedBg
+        isGrouped -> groupedBg
+        else -> ungroupedBg
+    }
+    val textColor = when {
+        isSpeakerOffline -> offlineColor
+        isGrouped -> groupedText
+        else -> ungroupedText
+    }
+    // TalkBack: announce group state per PRD §14
+    val chipLabel = when {
+        isSpeakerOffline -> "${zone.displayName}, offline"
+        isGrouped -> "${zone.displayName}, grouped"
+        else -> "${zone.displayName}, ungrouped"
+    }
     Box(
         modifier = GlanceModifier
             .cornerRadius(8.dp)
-            .background(if (isGrouped) groupedBg else ungroupedBg)
+            .background(bg)
             .padding(horizontal = 8.dp, vertical = 4.dp)
-            .clickable(
-                actionRunCallback<ToggleGroupAction>(
-                    actionParametersOf(SPEAKER_UUID_KEY to zone.id)
+            .semantics { contentDescription = chipLabel }
+            .let { mod ->
+                if (isSpeakerOffline) mod
+                else mod.clickable(
+                    actionRunCallback<ToggleGroupAction>(
+                        actionParametersOf(SPEAKER_UUID_KEY to zone.id)
+                    )
                 )
-            ),
+            },
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = zone.displayName.take(12),
             style = TextStyle(
-                color = ColorProvider(if (isGrouped) groupedText else ungroupedText),
+                color = ColorProvider(textColor),
                 fontSize = 11.sp,
-                fontWeight = if (isGrouped) FontWeight.Bold else FontWeight.Normal
+                fontWeight = if (isGrouped && !isSpeakerOffline) FontWeight.Bold else FontWeight.Normal
             ),
             maxLines = 1
         )

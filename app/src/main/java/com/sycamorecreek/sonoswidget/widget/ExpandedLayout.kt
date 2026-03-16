@@ -6,8 +6,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceComposable
 import androidx.glance.GlanceModifier
-import androidx.glance.Image
-import androidx.glance.ImageProvider
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.cornerRadius
@@ -17,7 +15,6 @@ import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
-import androidx.glance.layout.ContentScale
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxSize
@@ -26,9 +23,10 @@ import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
 import androidx.glance.layout.width
+import androidx.glance.semantics.contentDescription
+import androidx.glance.semantics.semantics
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
-import androidx.glance.text.TextAlign
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import androidx.glance.action.actionParametersOf
@@ -69,6 +67,7 @@ fun ExpandedLayout(
     albumArt: Bitmap? = null
 ) {
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
+    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating
     val hasTrack = state.currentTrack.name.isNotBlank()
     val palette = state.colorPalette
 
@@ -89,23 +88,43 @@ fun ExpandedLayout(
     ) {
         Column(modifier = GlanceModifier.fillMaxWidth()) {
 
+            // ── Inline error banner (auto-dismissed after 5s by service) ──
+            if (state.errorMessage != null) {
+                InlineErrorBanner(state.errorMessage)
+                Spacer(modifier = GlanceModifier.height(6.dp))
+            }
+
             // ── Now Playing: album art + track info ──
             NowPlayingSection(
                 state = state,
                 albumArt = albumArt,
-                isDisconnected = isDisconnected,
+                controlsDisabled = controlsDisabled,
                 hasTrack = hasTrack,
                 textPrimary = textPrimary,
                 textSecondary = textSecondary,
                 chipBg = chipBg
             )
 
-            Spacer(modifier = GlanceModifier.height(10.dp))
+            // ── Static progress bar with time labels (Task 3.5) ──
+            if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
+                Spacer(modifier = GlanceModifier.height(10.dp))
+                StaticProgressBar(
+                    elapsedMs = state.currentTrack.elapsedMs,
+                    durationMs = state.currentTrack.durationMs,
+                    accentColor = accentColor,
+                    trackColor = chipBg,
+                    barHeight = 4.dp,
+                    showTimeLabels = true,
+                    timeLabelColor = textSecondary
+                )
+            }
+
+            Spacer(modifier = GlanceModifier.height(8.dp))
 
             // ── Transport controls bar ──
             TransportControlsBar(
                 state = state,
-                isDisconnected = isDisconnected,
+                controlsDisabled = controlsDisabled,
                 textPrimary = textPrimary,
                 disabledColor = disabledColor,
                 accentColor = accentColor
@@ -116,7 +135,7 @@ fun ExpandedLayout(
             // ── Volume + zone selector ──
             VolumeSection(
                 state = state,
-                isDisconnected = isDisconnected,
+                controlsDisabled = controlsDisabled,
                 textPrimary = textPrimary,
                 textSecondary = textSecondary,
                 chipBg = chipBg,
@@ -128,11 +147,12 @@ fun ExpandedLayout(
             // ── Speaker grouping panel ──
             SpeakerGroupingSection(
                 state = state,
-                isDisconnected = isDisconnected,
+                controlsDisabled = controlsDisabled,
                 textPrimary = textPrimary,
                 textSecondary = textSecondary,
                 accentColor = accentColor,
                 chipBg = chipBg,
+                disabledColor = disabledColor,
                 sectionLabelColor = sectionLabelColor
             )
 
@@ -156,6 +176,12 @@ fun ExpandedLayout(
                 chipBg = chipBg,
                 sectionLabelColor = sectionLabelColor
             )
+
+            // ── Permission hint (one-time) ──
+            if (state.showPermissionHint) {
+                Spacer(modifier = GlanceModifier.height(6.dp))
+                PermissionHintBanner(textSecondary, chipBg)
+            }
         }
     }
 }
@@ -169,46 +195,26 @@ fun ExpandedLayout(
 private fun NowPlayingSection(
     state: SonosWidgetState,
     albumArt: Bitmap?,
-    isDisconnected: Boolean,
+    controlsDisabled: Boolean,
     hasTrack: Boolean,
     textPrimary: Color,
     textSecondary: Color,
     chipBg: Color
 ) {
+    val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
+
     Row(
         modifier = GlanceModifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Album art — larger in expanded layout (120dp)
-        Box(
-            modifier = GlanceModifier
-                .size(120.dp)
-                .cornerRadius(12.dp)
-                .background(chipBg)
-                .clickable(actionRunCallback<OpenSonosAppAction>()),
-            contentAlignment = Alignment.Center
-        ) {
-            if (albumArt != null) {
-                Image(
-                    provider = ImageProvider(albumArt),
-                    contentDescription = state.currentTrack.album.ifBlank {
-                        "Album art \u2014 tap to open Sonos"
-                    },
-                    modifier = GlanceModifier
-                        .size(120.dp)
-                        .cornerRadius(12.dp),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Text(
-                    text = if (hasTrack) "\uD83C\uDFB5" else "\uD83D\uDD0A",
-                    style = TextStyle(
-                        fontSize = 36.sp,
-                        textAlign = TextAlign.Center
-                    )
-                )
-            }
-        }
+        // Album art with pill badge overlay (120dp in expanded layout)
+        AlbumArtWithBadge(
+            albumArt = albumArt,
+            state = state,
+            size = 120.dp,
+            chipBg = chipBg,
+            hasTrack = hasTrack
+        )
 
         Spacer(modifier = GlanceModifier.width(12.dp))
 
@@ -216,6 +222,7 @@ private fun NowPlayingSection(
         Column(modifier = GlanceModifier.defaultWeight()) {
             Text(
                 text = when {
+                    state.isOffline -> "Offline"
                     isDisconnected -> "Searching for speakers\u2026"
                     hasTrack -> state.currentTrack.name
                     else -> "No music playing"
@@ -232,6 +239,9 @@ private fun NowPlayingSection(
 
             Text(
                 text = when {
+                    state.isOffline -> "No internet and no local network"
+                    state.isUpdating -> "Speaker is updating firmware\u2026"
+                    state.isRateLimited -> "Cloud API rate limited \u2014 retrying\u2026"
                     isDisconnected && state.isReconnecting -> "Reconnecting\u2026"
                     isDisconnected -> "Check Wi-Fi connection"
                     state.currentTrack.artist.isNotBlank() -> state.currentTrack.artist
@@ -245,7 +255,7 @@ private fun NowPlayingSection(
             )
 
             // Show album name in expanded layout
-            if (hasTrack && state.currentTrack.album.isNotBlank() && !isDisconnected) {
+            if (hasTrack && state.currentTrack.album.isNotBlank() && !controlsDisabled) {
                 Spacer(modifier = GlanceModifier.height(2.dp))
                 Text(
                     text = state.currentTrack.album,
@@ -268,22 +278,35 @@ private fun NowPlayingSection(
 @androidx.compose.runtime.Composable
 private fun TransportControlsBar(
     state: SonosWidgetState,
-    isDisconnected: Boolean,
+    controlsDisabled: Boolean,
     textPrimary: Color,
     disabledColor: Color,
     accentColor: Color
 ) {
+    // Build accessible labels for stateful controls
+    val shuffleLabel = if (state.shuffleEnabled) "Shuffle on, double tap to turn off"
+        else "Shuffle off, double tap to turn on"
+    val playPauseLabel = if (state.playbackState == PlaybackState.PLAYING)
+        "Pause playback" else "Play"
+    val repeatLabel = when (state.repeatMode) {
+        RepeatMode.NONE -> "Repeat off, double tap to repeat all"
+        RepeatMode.ALL -> "Repeat all, double tap to repeat one"
+        RepeatMode.ONE -> "Repeat one, double tap to turn off"
+    }
+
     Row(
         modifier = GlanceModifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Shuffle toggle
+        // Shuffle toggle (48dp touch target per PRD §7.1)
         Box(
-            modifier = if (isDisconnected) GlanceModifier.size(40.dp)
-            else GlanceModifier.size(40.dp).clickable(
-                actionRunCallback<ToggleShuffleAction>()
-            ),
+            modifier = GlanceModifier.size(48.dp)
+                .semantics { contentDescription = shuffleLabel }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<ToggleShuffleAction>())
+                },
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -291,7 +314,7 @@ private fun TransportControlsBar(
                 style = TextStyle(
                     color = ColorProvider(
                         when {
-                            isDisconnected -> disabledColor
+                            controlsDisabled -> disabledColor
                             state.shuffleEnabled -> accentColor
                             else -> textPrimary
                         }
@@ -303,19 +326,21 @@ private fun TransportControlsBar(
 
         Spacer(modifier = GlanceModifier.defaultWeight())
 
-        // Previous
+        // Previous (48dp touch target)
         Box(
-            modifier = if (isDisconnected) GlanceModifier.size(48.dp)
-            else GlanceModifier.size(48.dp).clickable(
-                actionRunCallback<PreviousTrackAction>()
-            ),
+            modifier = GlanceModifier.size(48.dp)
+                .semantics { contentDescription = "Previous track" }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<PreviousTrackAction>())
+                },
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = "\u23EE",
                 style = TextStyle(
                     color = ColorProvider(
-                        if (isDisconnected) disabledColor else textPrimary
+                        if (controlsDisabled) disabledColor else textPrimary
                     ),
                     fontSize = 20.sp
                 )
@@ -324,12 +349,14 @@ private fun TransportControlsBar(
 
         Spacer(modifier = GlanceModifier.width(20.dp))
 
-        // Play/Pause — primary control, larger
+        // Play/Pause — primary control, larger (56dp touch target)
         Box(
-            modifier = if (isDisconnected) GlanceModifier.size(56.dp)
-            else GlanceModifier.size(56.dp).clickable(
-                actionRunCallback<PlayPauseAction>()
-            ),
+            modifier = GlanceModifier.size(56.dp)
+                .semantics { contentDescription = playPauseLabel }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<PlayPauseAction>())
+                },
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -339,7 +366,7 @@ private fun TransportControlsBar(
                 },
                 style = TextStyle(
                     color = ColorProvider(
-                        if (isDisconnected) disabledColor else textPrimary
+                        if (controlsDisabled) disabledColor else textPrimary
                     ),
                     fontSize = 28.sp
                 )
@@ -348,19 +375,21 @@ private fun TransportControlsBar(
 
         Spacer(modifier = GlanceModifier.width(20.dp))
 
-        // Next
+        // Next (48dp touch target)
         Box(
-            modifier = if (isDisconnected) GlanceModifier.size(48.dp)
-            else GlanceModifier.size(48.dp).clickable(
-                actionRunCallback<NextTrackAction>()
-            ),
+            modifier = GlanceModifier.size(48.dp)
+                .semantics { contentDescription = "Next track" }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<NextTrackAction>())
+                },
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = "\u23ED",
                 style = TextStyle(
                     color = ColorProvider(
-                        if (isDisconnected) disabledColor else textPrimary
+                        if (controlsDisabled) disabledColor else textPrimary
                     ),
                     fontSize = 20.sp
                 )
@@ -369,12 +398,14 @@ private fun TransportControlsBar(
 
         Spacer(modifier = GlanceModifier.defaultWeight())
 
-        // Repeat cycle (NONE → ALL → ONE)
+        // Repeat cycle (48dp touch target per PRD §7.1, upgraded from 40dp)
         Box(
-            modifier = if (isDisconnected) GlanceModifier.size(40.dp)
-            else GlanceModifier.size(40.dp).clickable(
-                actionRunCallback<CycleRepeatAction>()
-            ),
+            modifier = GlanceModifier.size(48.dp)
+                .semantics { contentDescription = repeatLabel }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<CycleRepeatAction>())
+                },
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -385,7 +416,7 @@ private fun TransportControlsBar(
                 style = TextStyle(
                     color = ColorProvider(
                         when {
-                            isDisconnected -> disabledColor
+                            controlsDisabled -> disabledColor
                             state.repeatMode != RepeatMode.NONE -> accentColor
                             else -> textPrimary
                         }
@@ -405,34 +436,36 @@ private fun TransportControlsBar(
 @androidx.compose.runtime.Composable
 private fun VolumeSection(
     state: SonosWidgetState,
-    isDisconnected: Boolean,
+    controlsDisabled: Boolean,
     textPrimary: Color,
     textSecondary: Color,
     chipBg: Color,
     accentColor: Color
 ) {
+    val disabledVol = Color(0xFF555570)
+
     Row(
         modifier = GlanceModifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Volume down
+        // Volume down (48dp touch target)
         Box(
-            modifier = if (isDisconnected) GlanceModifier
+            modifier = GlanceModifier
                 .size(48.dp)
                 .cornerRadius(8.dp)
                 .background(chipBg)
-            else GlanceModifier
-                .size(48.dp)
-                .cornerRadius(8.dp)
-                .background(chipBg)
-                .clickable(actionRunCallback<VolumeDownAction>()),
+                .semantics { contentDescription = "Decrease volume" }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<VolumeDownAction>())
+                },
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = "\u2013",
                 style = TextStyle(
                     color = ColorProvider(
-                        if (isDisconnected) Color(0xFF555570) else textPrimary
+                        if (controlsDisabled) disabledVol else textPrimary
                     ),
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
@@ -442,36 +475,39 @@ private fun VolumeSection(
 
         Spacer(modifier = GlanceModifier.width(8.dp))
 
-        // Volume percentage
+        // Volume percentage — TalkBack reads "Volume: N%"
         Text(
             text = "${state.volume}%",
             style = TextStyle(
                 color = ColorProvider(textPrimary),
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium
-            )
+            ),
+            modifier = GlanceModifier.semantics {
+                contentDescription = "Volume: ${state.volume} percent"
+            }
         )
 
         Spacer(modifier = GlanceModifier.width(8.dp))
 
-        // Volume up
+        // Volume up (48dp touch target)
         Box(
-            modifier = if (isDisconnected) GlanceModifier
+            modifier = GlanceModifier
                 .size(48.dp)
                 .cornerRadius(8.dp)
                 .background(chipBg)
-            else GlanceModifier
-                .size(48.dp)
-                .cornerRadius(8.dp)
-                .background(chipBg)
-                .clickable(actionRunCallback<VolumeUpAction>()),
+                .semantics { contentDescription = "Increase volume" }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<VolumeUpAction>())
+                },
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = "+",
                 style = TextStyle(
                     color = ColorProvider(
-                        if (isDisconnected) Color(0xFF555570) else textPrimary
+                        if (controlsDisabled) disabledVol else textPrimary
                     ),
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
@@ -482,7 +518,7 @@ private fun VolumeSection(
         Spacer(modifier = GlanceModifier.defaultWeight())
 
         // Active zone name + connection mode icon
-        if (!isDisconnected && state.activeZone.displayName.isNotBlank()) {
+        if (!controlsDisabled && state.activeZone.displayName.isNotBlank()) {
             val modeIcon = connectionModeIcon(state.connectionMode)
             Box(
                 modifier = GlanceModifier
@@ -517,11 +553,12 @@ private fun VolumeSection(
 @androidx.compose.runtime.Composable
 private fun SpeakerGroupingSection(
     state: SonosWidgetState,
-    isDisconnected: Boolean,
+    controlsDisabled: Boolean,
     textPrimary: Color,
     textSecondary: Color,
     accentColor: Color,
     chipBg: Color,
+    disabledColor: Color,
     sectionLabelColor: Color
 ) {
     Column(modifier = GlanceModifier.fillMaxWidth()) {
@@ -538,9 +575,13 @@ private fun SpeakerGroupingSection(
         Spacer(modifier = GlanceModifier.height(6.dp))
 
         val allZones = state.zones
-        if (allZones.isEmpty() || isDisconnected) {
+        if (allZones.isEmpty() || controlsDisabled) {
             Text(
-                text = if (isDisconnected) "Offline" else "No speakers found",
+                text = when {
+                    state.isOffline -> "Offline"
+                    controlsDisabled -> "Unavailable"
+                    else -> "No speakers found"
+                },
                 style = TextStyle(
                     color = ColorProvider(textSecondary),
                     fontSize = 12.sp
@@ -554,10 +595,6 @@ private fun SpeakerGroupingSection(
                 modifier = GlanceModifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Show each zone as a grouping chip.
-                // Grouped = highlighted (accent), ungrouped = dim.
-                // Deduplicate by showing coordinators for ungrouped zones
-                // and all members of the active group.
                 val activeGroupMembers = allZones.filter { it.groupId == activeGroupId }
                 val otherCoordinators = allZones.filter {
                     it.groupId != activeGroupId && it.isGroupCoordinator
@@ -569,18 +606,20 @@ private fun SpeakerGroupingSection(
                         Spacer(modifier = GlanceModifier.width(6.dp))
                     }
                     val isGrouped = zone.groupId == activeGroupId
+                    val isSpeakerOffline = zone.id in state.offlineSpeakerIds
                     GroupingChip(
                         zone = zone,
                         isGrouped = isGrouped,
+                        isSpeakerOffline = isSpeakerOffline,
                         groupedBg = accentColor,
                         ungroupedBg = chipBg,
                         groupedText = textPrimary,
-                        ungroupedText = textSecondary
+                        ungroupedText = textSecondary,
+                        offlineColor = disabledColor
                     )
                 }
 
                 // "Group All" chip
-                val totalZones = activeGroupMembers.size + otherCoordinators.size
                 if (otherCoordinators.isNotEmpty()) {
                     Spacer(modifier = GlanceModifier.width(6.dp))
                     GroupAllChip(
@@ -609,35 +648,58 @@ private fun SpeakerGroupingSection(
 /**
  * A speaker chip that toggles group membership when tapped.
  * Grouped speakers show accent background; ungrouped show dim background.
+ * Offline speakers are grayed out and not tappable.
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
 private fun GroupingChip(
     zone: Zone,
     isGrouped: Boolean,
+    isSpeakerOffline: Boolean,
     groupedBg: Color,
     ungroupedBg: Color,
     groupedText: Color,
-    ungroupedText: Color
+    ungroupedText: Color,
+    offlineColor: Color
 ) {
+    val bg = when {
+        isSpeakerOffline -> ungroupedBg
+        isGrouped -> groupedBg
+        else -> ungroupedBg
+    }
+    val textColor = when {
+        isSpeakerOffline -> offlineColor
+        isGrouped -> groupedText
+        else -> ungroupedText
+    }
+    // TalkBack: announce group state per PRD §14
+    val chipLabel = when {
+        isSpeakerOffline -> "${zone.displayName}, offline"
+        isGrouped -> "${zone.displayName}, grouped"
+        else -> "${zone.displayName}, ungrouped"
+    }
     Box(
         modifier = GlanceModifier
             .cornerRadius(20.dp)
-            .background(if (isGrouped) groupedBg else ungroupedBg)
+            .background(bg)
             .padding(horizontal = 10.dp, vertical = 5.dp)
-            .clickable(
-                actionRunCallback<ToggleGroupAction>(
-                    actionParametersOf(SPEAKER_UUID_KEY to zone.id)
+            .semantics { contentDescription = chipLabel }
+            .let { mod ->
+                if (isSpeakerOffline) mod
+                else mod.clickable(
+                    actionRunCallback<ToggleGroupAction>(
+                        actionParametersOf(SPEAKER_UUID_KEY to zone.id)
+                    )
                 )
-            ),
+            },
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = zone.displayName.take(14),
             style = TextStyle(
-                color = ColorProvider(if (isGrouped) groupedText else ungroupedText),
+                color = ColorProvider(textColor),
                 fontSize = 11.sp,
-                fontWeight = if (isGrouped) FontWeight.Bold else FontWeight.Normal
+                fontWeight = if (isGrouped && !isSpeakerOffline) FontWeight.Bold else FontWeight.Normal
             ),
             maxLines = 1
         )
@@ -658,6 +720,7 @@ private fun GroupAllChip(
             .cornerRadius(20.dp)
             .background(chipBg)
             .padding(horizontal = 10.dp, vertical = 5.dp)
+            .semantics { contentDescription = "Group all speakers" }
             .clickable(actionRunCallback<GroupAllAction>()),
         contentAlignment = Alignment.Center
     ) {
@@ -749,10 +812,16 @@ private fun QueueItemRow(
     textPrimary: Color,
     textSecondary: Color
 ) {
+    val queueItemLabel = if (item.artist.isNotBlank()) {
+        "Play ${item.trackName} by ${item.artist}"
+    } else {
+        "Play ${item.trackName}"
+    }
     Row(
         modifier = GlanceModifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
+            .semantics { contentDescription = queueItemLabel }
             .clickable(
                 actionRunCallback<JumpToQueueItemAction>(
                     actionParametersOf(QUEUE_TRACK_NR_KEY to item.position)

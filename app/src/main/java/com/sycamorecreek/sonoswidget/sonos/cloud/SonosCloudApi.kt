@@ -34,6 +34,10 @@ class SonosCloudApi(
         private val JSON_TYPE = "application/json".toMediaType()
     }
 
+    /** Set to true when the last API call returned HTTP 429. Cleared on success. */
+    var lastResponseWasRateLimited: Boolean = false
+        private set
+
     // ── Response models ─────────────────────────────
 
     data class Household(val id: String)
@@ -259,11 +263,13 @@ class SonosCloudApi(
                 httpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
                         Log.e(TAG, "GET $url → HTTP ${response.code}")
-                        if (response.code == 429) {
+                        lastResponseWasRateLimited = response.code == 429
+                        if (lastResponseWasRateLimited) {
                             Log.w(TAG, "Rate limited by Sonos Cloud API")
                         }
                         return@withContext null
                     }
+                    lastResponseWasRateLimited = false
                     val body = response.body?.string() ?: return@withContext null
                     JSONObject(body)
                 }

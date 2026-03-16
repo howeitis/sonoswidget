@@ -30,16 +30,23 @@ import kotlinx.coroutines.launch
  * Delegates all Sonos interaction to [SonosRepository], which is the
  * single source of truth for speaker state and control commands.
  *
- * Lifecycle:
- *   - Started by [SonosWidgetReceiver] when the first widget is placed
+ * Lifecycle per PRD §12.1:
+ *   - Started by [SonosWidgetReceiver] when the first widget is placed,
+ *     or re-launched by any [WidgetActions] callback when the user taps a control
  *   - Runs a coroutine-based polling loop with adaptive intervals
+ *   - **Self-stops after 5 minutes of idle** (STOPPED state with no user interaction)
+ *   - On idle teardown, schedules [WidgetRefreshWorker] for 15-minute periodic fallback
  *   - Stopped when the last widget is removed or via explicit intent
  *
- * Polling strategy:
+ * Polling strategy (active mode):
  *   - PLAYING:      Poll every 2 seconds (for progress bar updates)
  *   - PAUSED:       Poll every 10 seconds (for external state changes)
  *   - STOPPED:      Poll every 15 seconds (idle monitoring)
- *   - DISCONNECTED: Retry discovery every 30 seconds
+ *   - DISCONNECTED: Exponential backoff 30s → 60s → 120s → 240s → 300s (capped)
+ *
+ * Battery budget per PRD §12.2:
+ *   - Active playback (4 hrs/day): < 1.5% battery via foreground service + push events
+ *   - Idle (20 hrs/day): < 0.5% battery via WorkManager periodic only
  *
  * The service uses FOREGROUND_SERVICE_MEDIA_PLAYBACK type, which requires
  * the FOREGROUND_SERVICE_MEDIA_PLAYBACK permission in the manifest.
@@ -56,7 +63,14 @@ class PlaybackService : Service() {
         private const val POLL_PLAYING_MS = 2_000L
         private const val POLL_PAUSED_MS = 10_000L
         private const val POLL_STOPPED_MS = 15_000L
-        private const val POLL_DISCONNECTED_MS = 30_000L
+
+        // Disconnected exponential backoff
+        private const val POLL_DISCONNECTED_BASE_MS = 30_000L
+        private const val POLL_DISCONNECTED_MAX_MS = 300_000L // 5 min cap
+
+        // Idle teardown: service self-stops after this duration of STOPPED state
+        // per PRD §12.1: "foreground service is torn down after 5 minutes of silence"
+        private const val IDLE_TEARDOWN_MS = 5 * 60 * 1000L // 5 minutes
 
         // Intent actions
         const val ACTION_START = "com.sycamorecreek.sonoswidget.action.START_PLAYBACK_SERVICE"
@@ -65,8 +79,12 @@ class PlaybackService : Service() {
         /**
          * Starts the playback service as a foreground service.
          * Safe to call multiple times — the service handles re-entry.
+         *
+         * Also cancels the periodic [WidgetRefreshWorker] since the
+         * foreground service handles polling at much higher frequency.
          */
         fun start(context: Context) {
+            WidgetRefreshWorker.cancel(context)
             val intent = Intent(context, PlaybackService::class.java).apply {
                 action = ACTION_START
             }
@@ -88,12 +106,32 @@ class PlaybackService : Service() {
     private var pollJob: Job? = null
 
     private lateinit var repository: SonosRepository
+    private lateinit var networkReceiver: NetworkChangeReceiver
+
+    // Idle teardown tracking (PRD §12.1)
+    private var idleStartMs: Long = 0L
+
+    // Exponential backoff for disconnected state
+    private var consecutiveDisconnects: Int = 0
 
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service created")
         repository = SonosRepository.getInstance(this)
         createNotificationChannel()
+
+        // Register network callback for auto-retry on connectivity changes
+        networkReceiver = NetworkChangeReceiver(this) {
+            // Trigger immediate re-discovery when network becomes available
+            serviceScope.launch {
+                if (!repository.isConnected) {
+                    Log.d(TAG, "Network restored — attempting re-discovery")
+                    consecutiveDisconnects = 0 // Reset backoff on network change
+                    pollOnce()
+                }
+            }
+        }
+        networkReceiver.register()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -106,6 +144,9 @@ class PlaybackService : Service() {
             }
             else -> {
                 Log.d(TAG, "Start requested")
+                // Reset idle tracking — service is being (re)started, likely by user action
+                idleStartMs = 0L
+                consecutiveDisconnects = 0
                 startForegroundWithNotification()
                 startPolling()
                 return START_STICKY
@@ -115,6 +156,7 @@ class PlaybackService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "Service destroyed")
+        networkReceiver.unregister()
         stopPolling()
         serviceScope.cancel()
         super.onDestroy()
@@ -200,21 +242,72 @@ class PlaybackService : Service() {
                     Log.e(TAG, "Poll cycle error", e)
                 }
 
-                val interval = when (repository.currentPlaybackState) {
-                    PlaybackState.PLAYING -> POLL_PLAYING_MS
-                    PlaybackState.PAUSED -> POLL_PAUSED_MS
-                    PlaybackState.TRANSITIONING -> POLL_PLAYING_MS
-                    PlaybackState.STOPPED -> {
-                        if (!repository.isConnected) POLL_DISCONNECTED_MS
-                        else POLL_STOPPED_MS
-                    }
+                // Check for idle teardown (PRD §12.1)
+                if (shouldTearDownForIdle()) {
+                    Log.d(TAG, "Idle for ${IDLE_TEARDOWN_MS / 1000}s — tearing down service, " +
+                        "scheduling WorkManager fallback")
+                    WidgetRefreshWorker.schedule(this@PlaybackService)
+                    stopSelf()
+                    return@launch
                 }
 
+                val interval = computeNextInterval()
                 delay(interval)
             }
 
             Log.d(TAG, "Polling loop ended")
         }
+    }
+
+    /**
+     * Computes the next poll interval based on current state.
+     *
+     * Uses exponential backoff for disconnected state:
+     * 30s → 60s → 120s → 240s → 300s (capped at 5 min).
+     * Resets on successful connection or network change.
+     */
+    private fun computeNextInterval(): Long {
+        val playbackState = repository.currentPlaybackState
+        val isConnected = repository.isConnected
+
+        return when {
+            playbackState == PlaybackState.PLAYING -> POLL_PLAYING_MS
+            playbackState == PlaybackState.TRANSITIONING -> POLL_PLAYING_MS
+            playbackState == PlaybackState.PAUSED -> POLL_PAUSED_MS
+            !isConnected -> {
+                // Exponential backoff: base * 2^n, capped
+                val backoff = POLL_DISCONNECTED_BASE_MS *
+                    (1L shl consecutiveDisconnects.coerceAtMost(4))
+                backoff.coerceAtMost(POLL_DISCONNECTED_MAX_MS)
+            }
+            else -> POLL_STOPPED_MS // STOPPED but connected
+        }
+    }
+
+    /**
+     * Tracks idle state and determines whether to self-stop.
+     *
+     * Returns true if the speaker has been in STOPPED (or disconnected)
+     * state for longer than [IDLE_TEARDOWN_MS].
+     */
+    private fun shouldTearDownForIdle(): Boolean {
+        val isIdle = repository.currentPlaybackState == PlaybackState.STOPPED ||
+            !repository.isConnected
+
+        if (!isIdle) {
+            // Reset idle timer when music is playing or paused
+            idleStartMs = 0L
+            return false
+        }
+
+        val now = System.currentTimeMillis()
+        if (idleStartMs == 0L) {
+            // Start tracking idle time
+            idleStartMs = now
+            return false
+        }
+
+        return (now - idleStartMs) >= IDLE_TEARDOWN_MS
     }
 
     private fun stopPolling() {
@@ -228,20 +321,28 @@ class PlaybackService : Service() {
      *
      * If no speaker is connected, attempts discovery first.
      * Otherwise, polls playback state and updates the widget.
+     *
+     * Tracks consecutive disconnect failures for exponential backoff.
      */
     private suspend fun pollOnce() {
         // Ensure we have a speaker to talk to
         if (!repository.isConnected) {
             val discovered = repository.discoverAndConnect()
             if (!discovered) {
+                consecutiveDisconnects++
                 repository.pushDisconnectedState()
                 updateNotification(null)
                 return
             }
+            // Successfully connected — reset backoff
+            consecutiveDisconnects = 0
         }
 
         // Poll and update widget state
         val state = repository.pollAndUpdate()
+
+        // Reset backoff on successful poll
+        consecutiveDisconnects = 0
 
         // Update notification with current track
         val trackName = state?.currentTrack?.name?.ifBlank { null }

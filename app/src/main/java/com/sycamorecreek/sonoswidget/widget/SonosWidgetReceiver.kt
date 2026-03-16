@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import com.sycamorecreek.sonoswidget.service.PlaybackService
+import com.sycamorecreek.sonoswidget.service.WidgetRefreshWorker
 
 /**
  * BroadcastReceiver that handles widget lifecycle events.
@@ -36,12 +37,14 @@ class SonosWidgetReceiver : GlanceAppWidgetReceiver() {
 
     /**
      * Called when the last widget instance is removed from the home screen.
-     * Stops the foreground service since there are no widgets to update.
+     * Stops the foreground service and cancels the periodic worker since
+     * there are no widgets to update.
      */
     override fun onDisabled(context: Context) {
         super.onDisabled(context)
-        Log.d(TAG, "Last widget removed — stopping PlaybackService")
+        Log.d(TAG, "Last widget removed — stopping PlaybackService and WorkManager")
         PlaybackService.stop(context)
+        WidgetRefreshWorker.cancel(context)
     }
 
     /**

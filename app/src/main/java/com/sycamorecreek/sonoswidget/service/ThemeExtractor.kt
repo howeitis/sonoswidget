@@ -125,9 +125,10 @@ object ThemeExtractor {
 
     /**
      * Ensures the foreground color has sufficient contrast against the background.
-     * Returns [fallback] if the contrast ratio is too low (< 3.0:1).
+     * Returns [fallback] if the contrast ratio is below WCAG AA threshold (4.5:1).
      *
-     * Uses WCAG relative luminance formula.
+     * Uses WCAG 2.0 relative luminance formula.
+     * PRD §14: All text must meet WCAG AA contrast ratio (4.5:1 for normal text).
      */
     private fun ensureContrast(fg: Int, bg: Int, fallback: Int): Int {
         val fgLum = relativeLuminance(fg)
@@ -136,7 +137,7 @@ object ThemeExtractor {
         val darker = minOf(fgLum, bgLum)
         val ratio = (lighter + 0.05) / (darker + 0.05)
 
-        return if (ratio >= 3.0) fg else fallback
+        return if (ratio >= 4.5) fg else fallback
     }
 
     /**

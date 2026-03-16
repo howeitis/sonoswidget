@@ -23,6 +23,9 @@
     <!-- Notification permission for foreground service notification -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Haptic feedback for widget transport controls (HapticHelper) -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:name=".app.SonosApplication"
         android:allowBackup="true"

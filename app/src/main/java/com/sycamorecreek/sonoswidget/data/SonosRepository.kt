@@ -20,10 +20,12 @@ import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Single source of truth for Sonos state across the app.
@@ -49,6 +51,10 @@ class SonosRepository private constructor(
         private const val TAG = "SonosRepository"
         private const val ZONE_REFRESH_INTERVAL_MS = 60_000L
         private const val CONNECTION_CACHE_MS = 30_000L
+        private const val COMMAND_TIMEOUT_MS = 3_000L
+        private const val RATE_LIMIT_BACKOFF_MS = 30_000L
+        private const val ERROR_BANNER_DISMISS_MS = 5_000L
+        private const val OFFLINE_CHECK_INTERVAL_MS = 60_000L
 
         @Volatile
         private var instance: SonosRepository? = null
@@ -112,6 +118,27 @@ class SonosRepository private constructor(
     private var lastQueueTrackNum: Int = -1
     private var cachedTransportSettings: TransportSettings? = null
 
+    // Error state tracking
+    private var rateLimitedUntilMs: Long = 0L
+    private var permissionHintShown: Boolean = false
+    private var errorBannerExpiresMs: Long = 0L
+
+    // Offline speaker detection throttling (Task 3.7)
+    // Pinging every zone member on every poll is expensive for battery.
+    // Throttle to once every 60 seconds (same as zone group refresh).
+    private var cachedOfflineSpeakers: Set<String> = emptySet()
+    private var lastOfflineCheckMs: Long = 0L
+
+    // ──────────────────────────────────────────────
+    // Action debouncer (Task 3.4)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Queues and collapses widget taps during cold-start reconnection.
+     * Drained automatically on successful reconnection via [drainDebouncedActions].
+     */
+    val actionDebouncer = ActionDebouncer()
+
     /** Whether we have a speaker target (local) or valid cloud session. */
     val isConnected: Boolean get() =
         activeSpeakerIp != null || activeConnectionMode == ConnectionMode.CLOUD
@@ -151,10 +178,20 @@ class SonosRepository private constructor(
      * Returns true if any connection mode succeeded.
      */
     suspend fun discoverAndConnect(): Boolean {
+        // Clear stale error states on fresh discovery
+        clearErrorStates()
+
         if (tryLocalDiscovery()) return true
         if (tryManualIps()) return true
+
+        // Show permission hint (one-time) if local discovery was skipped due to permission
+        if (!hasLocalNetworkPermission() && !permissionHintShown) {
+            permissionHintShown = true
+        }
+
         if (tryCloudFallback()) return true
-        Log.w(TAG, "All connection methods failed")
+
+        Log.w(TAG, "All connection methods failed — entering offline state")
         return false
     }
 
@@ -263,6 +300,8 @@ class SonosRepository private constructor(
     // ──────────────────────────────────────────────
 
     suspend fun pollAndUpdate(): SonosWidgetState? {
+        val wasReconnecting = _widgetState.value.isReconnecting
+
         // If connection cache expired and no local speaker, re-walk fallback chain
         if (!isConnectionCached() && activeSpeakerIp == null) {
             if (!discoverAndConnect()) {
@@ -271,10 +310,20 @@ class SonosRepository private constructor(
             }
         }
 
-        return when (activeConnectionMode) {
+        val result = when (activeConnectionMode) {
             ConnectionMode.CLOUD -> pollCloud()
             else -> pollLocal()
         }
+
+        // Drain debounced actions on reconnection (Task 3.4)
+        // Triggered when state transitions from isReconnecting → connected
+        if (wasReconnecting && !_widgetState.value.isReconnecting
+            && actionDebouncer.hasPendingActions
+        ) {
+            drainDebouncedActions()
+        }
+
+        return result
     }
 
     private suspend fun pollLocal(): SonosWidgetState? {
@@ -307,6 +356,12 @@ class SonosRepository private constructor(
 
         val queueItems = mapQueueItems(cachedQueue, currentTrackNum)
 
+        // Detect firmware update: Sonos returns "TRANSITIONING" for extended periods
+        // during firmware updates and no track metadata is available
+        val isFirmwareUpdating = transportInfo?.state == "TRANSITIONING" &&
+            positionInfo?.metadata == null &&
+            positionInfo?.trackUri.isNullOrBlank()
+
         var state = WidgetStateMapper.buildState(
             transportInfo = transportInfo,
             positionInfo = positionInfo,
@@ -315,7 +370,16 @@ class SonosRepository private constructor(
             activeZoneId = activeZoneId,
             transportSettings = cachedTransportSettings,
             connectionMode = activeConnectionMode
-        ).copy(queue = queueItems)
+        ).copy(
+            queue = queueItems,
+            isUpdating = isFirmwareUpdating,
+            isOffline = false,
+            isReconnecting = false,
+            isRateLimited = System.currentTimeMillis() < rateLimitedUntilMs,
+            showPermissionHint = false,
+            errorMessage = expiredErrorMessage(),
+            offlineSpeakerIds = detectOfflineSpeakers()
+        )
 
         val artBitmap = AlbumArtLoader.loadAndCache(
             context = context,
@@ -334,18 +398,82 @@ class SonosRepository private constructor(
         return state
     }
 
+    /**
+     * Detects speakers that are powered off / unreachable.
+     *
+     * Throttled to once every 60 seconds (Task 3.7 — battery optimization).
+     * Pinging every zone member on every 2-second poll cycle was the largest
+     * battery drain. Returns cached results between checks.
+     *
+     * Attempts a quick transport info check on each known zone member
+     * that is not the currently active speaker.
+     */
+    private suspend fun detectOfflineSpeakers(): Set<String> {
+        val now = System.currentTimeMillis()
+        if (now - lastOfflineCheckMs < OFFLINE_CHECK_INTERVAL_MS) {
+            return cachedOfflineSpeakers
+        }
+
+        val groups = cachedZoneGroups ?: return emptySet()
+        val activeIp = activeSpeakerIp ?: return emptySet()
+        val offline = mutableSetOf<String>()
+
+        for (member in groups.flatMap { it.members }) {
+            // Skip the active speaker — we already know it's online
+            if (member.ip == activeIp) continue
+
+            val info = controller.getTransportInfo(member.ip, member.port)
+            if (info == null) {
+                offline.add(member.uuid)
+            }
+        }
+
+        cachedOfflineSpeakers = offline
+        lastOfflineCheckMs = now
+        return offline
+    }
+
     private suspend fun pollCloud(): SonosWidgetState? {
+        // Check if we're in a rate-limit backoff period
+        if (System.currentTimeMillis() < rateLimitedUntilMs) {
+            Log.d(TAG, "Cloud poll skipped — rate limited until ${rateLimitedUntilMs}")
+            return _widgetState.value
+        }
+
         val cloudState = cloudController.getPlaybackStatus()
         if (cloudState == null) {
+            // Check if cloud controller reported a rate limit
+            if (cloudController.isRateLimited) {
+                Log.w(TAG, "Cloud API rate limited — backing off for ${RATE_LIMIT_BACKOFF_MS}ms")
+                rateLimitedUntilMs = System.currentTimeMillis() + RATE_LIMIT_BACKOFF_MS
+                val rateLimitState = _widgetState.value.copy(
+                    isRateLimited = true,
+                    errorMessage = null
+                )
+                _widgetState.value = rateLimitState
+                WidgetStateStore.pushState(context, rateLimitState)
+                return rateLimitState
+            }
+
             Log.w(TAG, "Cloud poll failed")
             return _widgetState.value
         }
 
+        // Success — clear rate limit and error states
+        rateLimitedUntilMs = 0L
+        val successState = cloudState.copy(
+            isRateLimited = false,
+            isOffline = false,
+            isReconnecting = false,
+            isUpdating = false,
+            errorMessage = expiredErrorMessage()
+        )
+
         cacheConnection(ConnectionMode.CLOUD)
 
-        _widgetState.value = cloudState
-        WidgetStateStore.pushState(context, cloudState)
-        return cloudState
+        _widgetState.value = successState
+        WidgetStateStore.pushState(context, successState)
+        return successState
     }
 
     /**
@@ -367,14 +495,155 @@ class SonosRepository private constructor(
         return _widgetState.value
     }
 
+    /**
+     * Pushes a disconnected state. If the cloud fallback also failed, this
+     * becomes a full "Offline" state (no internet + no LAN). Otherwise,
+     * it's a "Reconnecting…" state.
+     *
+     * When entering a fully offline state, any debounced actions are discarded
+     * since there's no prospect of reconnection to drain them into.
+     */
     suspend fun pushDisconnectedState() {
-        val state = SonosWidgetState(
+        val isFullyOffline = !cloudController.isLoggedIn || activeConnectionMode == ConnectionMode.DISCONNECTED
+
+        // Discard debounced actions when entering terminal offline state
+        if (isFullyOffline && actionDebouncer.hasPendingActions) {
+            Log.d(TAG, "Fully offline — discarding debounced actions")
+            actionDebouncer.clear()
+        }
+
+        val lastKnown = _widgetState.value
+        val state = lastKnown.copy(
             connectionMode = ConnectionMode.DISCONNECTED,
-            isReconnecting = true,
+            isReconnecting = !isFullyOffline,
+            isOffline = isFullyOffline,
+            isRateLimited = false,
+            isUpdating = false,
+            showPermissionHint = permissionHintShown && !hasLocalNetworkPermission(),
+            errorMessage = expiredErrorMessage(),
             lastUpdatedMs = System.currentTimeMillis()
         )
         _widgetState.value = state
         WidgetStateStore.pushState(context, state)
+    }
+
+    /** Clears transient error flags (called on successful connection/poll). */
+    private fun clearErrorStates() {
+        rateLimitedUntilMs = 0L
+    }
+
+    /**
+     * Returns the current error message if it hasn't expired, or null.
+     * Auto-dismisses after [ERROR_BANNER_DISMISS_MS].
+     */
+    private fun expiredErrorMessage(): String? {
+        if (errorBannerExpiresMs == 0L) return null
+        return if (System.currentTimeMillis() < errorBannerExpiresMs) {
+            _widgetState.value.errorMessage
+        } else {
+            errorBannerExpiresMs = 0L
+            null
+        }
+    }
+
+    /** Sets a transient error message that auto-dismisses after 5 seconds. */
+    private suspend fun pushErrorMessage(message: String) {
+        errorBannerExpiresMs = System.currentTimeMillis() + ERROR_BANNER_DISMISS_MS
+        val state = _widgetState.value.copy(errorMessage = message)
+        _widgetState.value = state
+        WidgetStateStore.pushState(context, state)
+    }
+
+    // ──────────────────────────────────────────────
+    // Action debouncing API (Task 3.4)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Whether widget actions should be queued instead of executed immediately.
+     * True when the widget is in reconnecting state and there is hope of
+     * re-establishing a connection (cloud credentials exist).
+     *
+     * Called by [WidgetActions] callbacks to decide between immediate
+     * execution and debounce queuing.
+     */
+    fun shouldDebounce(): Boolean = _widgetState.value.isReconnecting
+
+    /**
+     * Enqueues a widget action for deferred execution after reconnection.
+     * Called by [WidgetActions] callbacks when [shouldDebounce] returns true.
+     */
+    fun enqueueAction(type: ActionDebouncer.ActionType, param: String? = null) {
+        actionDebouncer.enqueue(type, param)
+    }
+
+    /**
+     * Drains the debounce queue and executes collapsed net actions.
+     *
+     * Called after a successful reconnection (transition from isReconnecting
+     * to connected). The 3-second stale intent timeout is applied at drain
+     * time — any queued tap older than 3 seconds is silently discarded.
+     *
+     * Per PRD Section 7.3: "Tapping Skip 3x during 'Reconnecting…' results
+     * in a single skip-3 command when connected."
+     */
+    private suspend fun drainDebouncedActions() {
+        val actions = actionDebouncer.drain()
+        if (actions.isEmpty()) return
+
+        Log.d(TAG, "Executing ${actions.size} debounced action(s) after reconnection")
+
+        for (action in actions) {
+            try {
+                when (action) {
+                    is ActionDebouncer.CollapsedAction.PlayPauseToggle -> togglePlayPause()
+                    is ActionDebouncer.CollapsedAction.Skip -> executeSkipDelta(action.delta)
+                    is ActionDebouncer.CollapsedAction.VolumeAdjust -> {
+                        val current = _widgetState.value.volume
+                        setVolume((current + action.delta).coerceIn(0, 100))
+                    }
+                    is ActionDebouncer.CollapsedAction.ShuffleToggle -> toggleShuffle()
+                    is ActionDebouncer.CollapsedAction.RepeatCycle -> {
+                        repeat(action.count) { cycleRepeatMode() }
+                    }
+                    is ActionDebouncer.CollapsedAction.JumpToTrack -> playQueueItem(action.trackNr)
+                    is ActionDebouncer.CollapsedAction.SwitchZone -> switchZone(action.zoneId)
+                    is ActionDebouncer.CollapsedAction.ToggleGroup -> toggleSpeakerGroup(action.speakerUuid)
+                    is ActionDebouncer.CollapsedAction.GroupAll -> groupAll()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to execute debounced action: $action", e)
+            }
+        }
+    }
+
+    /**
+     * Executes a net skip delta by jumping directly to the target track
+     * position in the queue (more efficient than calling next()/previous()
+     * in a loop).
+     *
+     * Falls back to sequential next()/previous() calls if the current
+     * track position is unknown.
+     */
+    private suspend fun executeSkipDelta(delta: Int) {
+        if (delta == 0) return
+
+        val currentTrackNum = lastQueueTrackNum
+        if (currentTrackNum > 0) {
+            // Use direct queue seek for efficiency: "single skip-N command"
+            val target = (currentTrackNum + delta).coerceAtLeast(1)
+            Log.d(TAG, "Skip delta $delta: seeking from track $currentTrackNum to $target")
+            playQueueItem(target)
+        } else {
+            // Fallback: sequential skip calls
+            Log.d(TAG, "Skip delta $delta: sequential (track position unknown)")
+            if (delta > 0) {
+                repeat(delta) { next() }
+            } else {
+                repeat(-delta) { previous() }
+            }
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -633,20 +902,47 @@ class SonosRepository private constructor(
     // Command routing internals
     // ──────────────────────────────────────────────
 
+    /**
+     * Routes a command through either local or cloud, with a 3-second timeout.
+     * On timeout, reverts the optimistic UI update and shows an inline error.
+     * On success, auto-retries once via poll.
+     */
     private suspend fun routeCommand(
         local: suspend (ip: String, port: Int) -> Boolean,
         cloud: suspend () -> Boolean
     ): Boolean {
-        return if (activeConnectionMode == ConnectionMode.CLOUD) {
-            val ok = cloud()
-            if (ok) {
-                kotlinx.coroutines.delay(200)
-                pollCloud()
+        val previousState = _widgetState.value
+
+        val result = try {
+            withTimeoutOrNull(COMMAND_TIMEOUT_MS) {
+                if (activeConnectionMode == ConnectionMode.CLOUD) {
+                    val ok = cloud()
+                    if (ok) {
+                        kotlinx.coroutines.delay(200)
+                        pollCloud()
+                    }
+                    ok
+                } else {
+                    executeLocalAndPoll(local)
+                }
             }
-            ok
-        } else {
-            executeLocalAndPoll(local)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Command failed with exception", e)
+            null
         }
+
+        if (result == null) {
+            // Timeout or exception — revert optimistic update
+            Log.w(TAG, "Command timed out (>${COMMAND_TIMEOUT_MS}ms) — reverting UI")
+            _widgetState.value = previousState
+            WidgetStateStore.pushState(context, previousState)
+            pushErrorMessage("Command timed out \u2014 tap to retry")
+            return false
+        }
+
+        return result
     }
 
     private suspend fun executeLocalAndPoll(
@@ -664,6 +960,8 @@ class SonosRepository private constructor(
         if (success) {
             kotlinx.coroutines.delay(200)
             pollAndUpdate()
+        } else {
+            pushErrorMessage("Command failed \u2014 tap to retry")
         }
         return success
     }
