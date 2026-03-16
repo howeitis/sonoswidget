@@ -65,8 +65,7 @@ class SonosWidget : GlanceAppWidget() {
                     CompactLayout(state, albumArt)
                 }
                 else -> {
-                    // TODO: MiniLayout (Task 3.2)
-                    CompactLayout(state, albumArt)
+                    MiniLayout(state, albumArt)
                 }
             }
         }
