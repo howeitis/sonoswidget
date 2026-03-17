@@ -18,9 +18,9 @@ import com.sycamorecreek.sonoswidget.service.WidgetStateStore
  * Main Glance widget for Sonos control.
  *
  * Uses SizeMode.Responsive with three size buckets:
- * - Mini  (~240x80dp)  — lock screen / hyper-compact
- * - Half  (~320x180dp) — 4x2 home screen
- * - Full  (~320x480dp) — 4x5 home screen
+ * - Mini    (~240x80dp)   — lock screen / hyper-compact
+ * - Compact (~320x180dp)  — 4x2 home screen
+ * - Full    (~480x580dp)  — 6x5 home screen (expanded layout)
  *
  * Reads playback state from Glance Preferences (written by PlaybackService
  * via WidgetStateStore) and delegates to the appropriate layout composable.
@@ -34,7 +34,7 @@ class SonosWidget : GlanceAppWidget() {
     companion object {
         val MINI_SIZE = DpSize(240.dp, 80.dp)
         val HALF_SIZE = DpSize(320.dp, 180.dp)
-        val FULL_SIZE = DpSize(320.dp, 480.dp)
+        val FULL_SIZE = DpSize(480.dp, 580.dp)
     }
 
     override val sizeMode = SizeMode.Responsive(

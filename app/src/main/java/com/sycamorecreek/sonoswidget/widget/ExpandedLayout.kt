@@ -32,33 +32,34 @@ import androidx.glance.unit.ColorProvider
 import androidx.glance.action.actionParametersOf
 
 /**
- * Full-screen (4x5) expanded widget layout.
+ * Full-screen (6x5) expanded widget layout.
  *
- * Shows the complete now-playing area, transport controls, volume section,
- * speaker grouping panel, queue list, and source bar.
+ * Shows a large now-playing area, transport controls, volume section,
+ * speaker grouping panel, and queue list.
  *
  * Layout:
- * ┌──────────────────────────────┐
- * │  ┌──────┐ Track Name         │
- * │  │ Art  │ Artist              │
- * │  │120dp │                     │
- * │  └──────┘                     │
- * ├──────────────────────────────┤
- * │  🔀  ⏮  ▶/⏸  ⏭  🔁        │  Controls bar
- * ├──────────────────────────────┤
- * │  [ – ]  45%  [ + ]   Zone    │  Volume + zone
- * ├──────────────────────────────┤
- * │  Speakers                    │
- * │  [Room1] [Room2] [Group All] │  Grouping chips
- * ├──────────────────────────────┤
- * │  Up Next                     │
- * │  1. Track A - Artist A       │
- * │  2. Track B - Artist B       │  Queue list
- * ├──────────────────────────────┤
- * │  🎵 Source Name              │  Source bar
- * └──────────────────────────────┘
- *
- * Phase 2 placeholder: source switching (Task 3.1).
+ * ┌──────────────────────────────────────────┐
+ * │                                          │
+ * │    ┌──────────┐                          │
+ * │    │          │  Track Name              │
+ * │    │ Album    │  Artist                  │
+ * │    │ Art      │  Album                   │
+ * │    │ 160dp    │                          │
+ * │    └──────────┘                          │
+ * │                                          │
+ * │  ━━━━━━━━━━━━━━━━━━━━━━━━━━  0:00/3:45  │
+ * ├──────────────────────────────────────────┤
+ * │    ♫   ⏮    ▶ / ⏸    ⏭    ↻            │  Controls
+ * ├──────────────────────────────────────────┤
+ * │  [ – ]  45%  [ + ]           Zone        │  Volume
+ * ├──────────────────────────────────────────┤
+ * │  Speakers                                │
+ * │  [Room1] [Room2] [Group All]             │  Grouping
+ * ├──────────────────────────────────────────┤
+ * │  Up Next                                 │
+ * │  Track A - Artist A                      │
+ * │  Track B - Artist B                      │  Queue
+ * └──────────────────────────────────────────┘
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
@@ -83,7 +84,7 @@ fun ExpandedLayout(
         modifier = GlanceModifier
             .fillMaxSize()
             .background(bgColor)
-            .padding(12.dp),
+            .padding(16.dp),
         contentAlignment = Alignment.TopCenter
     ) {
         // Glance Column has a 10-element limit. Group sections into logical
@@ -109,7 +110,7 @@ fun ExpandedLayout(
                 )
 
                 if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
-                    Spacer(modifier = GlanceModifier.height(10.dp))
+                    Spacer(modifier = GlanceModifier.height(14.dp))
                     StaticProgressBar(
                         elapsedMs = state.currentTrack.elapsedMs,
                         durationMs = state.currentTrack.durationMs,
@@ -122,7 +123,7 @@ fun ExpandedLayout(
                 }
             }
 
-            Spacer(modifier = GlanceModifier.height(8.dp))
+            Spacer(modifier = GlanceModifier.height(12.dp))
 
             // ── Group 2: Transport controls + volume ──
             Column(modifier = GlanceModifier.fillMaxWidth()) {
@@ -134,7 +135,7 @@ fun ExpandedLayout(
                     accentColor = accentColor
                 )
 
-                Spacer(modifier = GlanceModifier.height(8.dp))
+                Spacer(modifier = GlanceModifier.height(12.dp))
 
                 VolumeSection(
                     state = state,
@@ -146,9 +147,9 @@ fun ExpandedLayout(
                 )
             }
 
-            Spacer(modifier = GlanceModifier.height(10.dp))
+            Spacer(modifier = GlanceModifier.height(14.dp))
 
-            // ── Group 3: Speakers + queue + source ──
+            // ── Group 3: Speakers + queue ──
             Column(modifier = GlanceModifier.fillMaxWidth()) {
                 SpeakerGroupingSection(
                     state = state,
@@ -171,14 +172,6 @@ fun ExpandedLayout(
                     chipBg = chipBg
                 )
 
-                Spacer(modifier = GlanceModifier.height(8.dp))
-
-                SourceBarSection(
-                    state = state,
-                    textSecondary = textSecondary,
-                    chipBg = chipBg,
-                    sectionLabelColor = sectionLabelColor
-                )
             }
 
             // ── Permission hint (one-time) ──
@@ -211,16 +204,16 @@ private fun NowPlayingSection(
         modifier = GlanceModifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Album art with pill badge overlay (120dp in expanded layout)
+        // Album art with pill badge overlay (160dp in expanded 6x5 layout)
         AlbumArtWithBadge(
             albumArt = albumArt,
             state = state,
-            size = 120.dp,
+            size = 160.dp,
             chipBg = chipBg,
             hasTrack = hasTrack
         )
 
-        Spacer(modifier = GlanceModifier.width(12.dp))
+        Spacer(modifier = GlanceModifier.width(16.dp))
 
         // Track info
         Column(modifier = GlanceModifier.defaultWeight()) {
@@ -233,13 +226,13 @@ private fun NowPlayingSection(
                 },
                 style = TextStyle(
                     color = ColorProvider(textPrimary),
-                    fontSize = 16.sp,
+                    fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 ),
-                maxLines = 1
+                maxLines = 2
             )
 
-            Spacer(modifier = GlanceModifier.height(2.dp))
+            Spacer(modifier = GlanceModifier.height(4.dp))
 
             Text(
                 text = when {
@@ -253,19 +246,19 @@ private fun NowPlayingSection(
                 },
                 style = TextStyle(
                     color = ColorProvider(textSecondary),
-                    fontSize = 13.sp
+                    fontSize = 15.sp
                 ),
                 maxLines = 1
             )
 
             // Show album name in expanded layout
             if (hasTrack && state.currentTrack.album.isNotBlank() && !controlsDisabled) {
-                Spacer(modifier = GlanceModifier.height(2.dp))
+                Spacer(modifier = GlanceModifier.height(3.dp))
                 Text(
                     text = state.currentTrack.album,
                     style = TextStyle(
                         color = ColorProvider(textSecondary),
-                        fontSize = 11.sp
+                        fontSize = 13.sp
                     ),
                     maxLines = 1
                 )
@@ -303,7 +296,7 @@ private fun TransportControlsBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Shuffle toggle (48dp touch target per PRD §7.1)
+        // Shuffle toggle (48dp touch target)
         Box(
             modifier = GlanceModifier.size(48.dp)
                 .semantics { contentDescription = shuffleLabel }
@@ -314,16 +307,17 @@ private fun TransportControlsBar(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "\uD83D\uDD00", // 🔀
+                text = "\u2723", // ✣ shuffle icon
                 style = TextStyle(
                     color = ColorProvider(
                         when {
                             controlsDisabled -> disabledColor
                             state.shuffleEnabled -> accentColor
-                            else -> textPrimary
+                            else -> Color.White
                         }
                     ),
-                    fontSize = 16.sp
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
                 )
             )
         }
@@ -341,21 +335,24 @@ private fun TransportControlsBar(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "\u23EE",
+                text = "\u2758\u25C0", // ❘◀
                 style = TextStyle(
                     color = ColorProvider(
-                        if (controlsDisabled) disabledColor else textPrimary
+                        if (controlsDisabled) disabledColor else Color.White
                     ),
-                    fontSize = 20.sp
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
                 )
             )
         }
 
-        Spacer(modifier = GlanceModifier.width(20.dp))
+        Spacer(modifier = GlanceModifier.width(24.dp))
 
-        // Play/Pause — primary control, larger (56dp touch target)
+        // Play/Pause — primary control, larger (60dp touch target)
         Box(
-            modifier = GlanceModifier.size(56.dp)
+            modifier = GlanceModifier.size(60.dp)
+                .cornerRadius(30.dp)
+                .background(Color.White)
                 .semantics { contentDescription = playPauseLabel }
                 .let { mod ->
                     if (controlsDisabled) mod
@@ -365,19 +362,20 @@ private fun TransportControlsBar(
         ) {
             Text(
                 text = when (state.playbackState) {
-                    PlaybackState.PLAYING -> "\u23F8"
-                    else -> "\u25B6"
+                    PlaybackState.PLAYING -> "\u2759\u2759" // ❙❙ pause
+                    else -> "\u25B6" // ▶ play
                 },
                 style = TextStyle(
                     color = ColorProvider(
-                        if (controlsDisabled) disabledColor else textPrimary
+                        if (controlsDisabled) disabledColor else Color.Black
                     ),
-                    fontSize = 28.sp
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
                 )
             )
         }
 
-        Spacer(modifier = GlanceModifier.width(20.dp))
+        Spacer(modifier = GlanceModifier.width(24.dp))
 
         // Next (48dp touch target)
         Box(
@@ -390,19 +388,20 @@ private fun TransportControlsBar(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "\u23ED",
+                text = "\u25B6\u2758", // ▶❘
                 style = TextStyle(
                     color = ColorProvider(
-                        if (controlsDisabled) disabledColor else textPrimary
+                        if (controlsDisabled) disabledColor else Color.White
                     ),
-                    fontSize = 20.sp
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
                 )
             )
         }
 
         Spacer(modifier = GlanceModifier.defaultWeight())
 
-        // Repeat cycle (48dp touch target per PRD §7.1, upgraded from 40dp)
+        // Repeat cycle (48dp touch target)
         Box(
             modifier = GlanceModifier.size(48.dp)
                 .semantics { contentDescription = repeatLabel }
@@ -414,18 +413,19 @@ private fun TransportControlsBar(
         ) {
             Text(
                 text = when (state.repeatMode) {
-                    RepeatMode.ONE -> "\uD83D\uDD02" // 🔂
-                    else -> "\uD83D\uDD01" // 🔁
+                    RepeatMode.ONE -> "\u21BA\u00B9" // ↺¹
+                    else -> "\u21BA" // ↺
                 },
                 style = TextStyle(
                     color = ColorProvider(
                         when {
                             controlsDisabled -> disabledColor
                             state.repeatMode != RepeatMode.NONE -> accentColor
-                            else -> textPrimary
+                            else -> Color.White
                         }
                     ),
-                    fontSize = 16.sp
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
                 )
             )
         }
@@ -788,7 +788,7 @@ private fun QueueSection(
             LazyColumn(
                 modifier = GlanceModifier
                     .fillMaxWidth()
-                    .height(140.dp)
+                    .height(200.dp)
                     .cornerRadius(8.dp)
                     .background(chipBg)
                     .padding(8.dp)
@@ -857,44 +857,3 @@ private fun QueueItemRow(
     }
 }
 
-// ──────────────────────────────────────────────
-// Source bar (placeholder — Task 3.1)
-// ──────────────────────────────────────────────
-
-@GlanceComposable
-@androidx.compose.runtime.Composable
-private fun SourceBarSection(
-    state: SonosWidgetState,
-    textSecondary: Color,
-    chipBg: Color,
-    sectionLabelColor: Color
-) {
-    Box(
-        modifier = GlanceModifier
-            .fillMaxWidth()
-            .cornerRadius(8.dp)
-            .background(chipBg)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        contentAlignment = Alignment.CenterStart
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "\uD83C\uDFB5",
-                style = TextStyle(fontSize = 14.sp)
-            )
-            Spacer(modifier = GlanceModifier.width(8.dp))
-            Text(
-                text = if (state.currentSource.isNotBlank()) {
-                    state.currentSource
-                } else {
-                    "Source"
-                },
-                style = TextStyle(
-                    color = ColorProvider(textSecondary),
-                    fontSize = 12.sp
-                ),
-                maxLines = 1
-            )
-        }
-    }
-}
