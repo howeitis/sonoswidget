@@ -382,6 +382,10 @@ class SonosRepository private constructor(
         cachedTransportSettings = controller.getTransportSettings(ip, port)
             ?: cachedTransportSettings
 
+        // Fetch current media URI for source detection
+        val mediaInfo = controller.getMediaInfo(ip, port)
+        val currentSource = WidgetStateMapper.mapCurrentSource(mediaInfo?.currentUri)
+
         val queueItems = mapQueueItems(cachedQueue, currentTrackNum)
 
         // Detect firmware update: Sonos returns "TRANSITIONING" for extended periods
@@ -400,6 +404,7 @@ class SonosRepository private constructor(
             connectionMode = activeConnectionMode
         ).copy(
             queue = queueItems,
+            currentSource = currentSource,
             isUpdating = isFirmwareUpdating,
             isOffline = false,
             isReconnecting = false,

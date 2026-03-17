@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.util.Log
 import coil.ImageLoader
 import coil.disk.DiskCache
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import coil.size.Size
@@ -208,6 +209,8 @@ object AlbumArtLoader {
                 .data(url)
                 .size(Size(ART_SIZE_PX, ART_SIZE_PX))
                 .allowHardware(false) // Need software bitmap for Palette + file save
+                .memoryCachePolicy(CachePolicy.DISABLED) // We cache via lastArtUrl
+                .diskCachePolicy(CachePolicy.DISABLED)   // Avoid stale Coil cache
                 .build()
 
             val result = loader.execute(request)

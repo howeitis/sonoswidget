@@ -83,6 +83,7 @@ object WidgetStateStore {
             put("queue", JSONArray().apply {
                 state.queue.forEach { put(serializeQueueItem(it)) }
             })
+            put("currentSource", state.currentSource)
             put("connectionMode", state.connectionMode.name)
             put("shuffleEnabled", state.shuffleEnabled)
             put("repeatMode", state.repeatMode.name)
@@ -105,6 +106,7 @@ object WidgetStateStore {
                 volume = obj.optInt("volume", 50),
                 zones = deserializeZoneList(obj.optJSONArray("zones")),
                 queue = deserializeQueueList(obj.optJSONArray("queue")),
+                currentSource = obj.optString("currentSource", ""),
                 connectionMode = try {
                     ConnectionMode.valueOf(obj.optString("connectionMode", "DISCONNECTED"))
                 } catch (_: Exception) {

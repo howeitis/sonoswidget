@@ -884,8 +884,8 @@ private fun SourceBarSection(
             )
             Spacer(modifier = GlanceModifier.width(8.dp))
             Text(
-                text = if (state.availableSources.isNotEmpty()) {
-                    state.availableSources.first().name
+                text = if (state.currentSource.isNotBlank()) {
+                    state.currentSource
                 } else {
                     "Source"
                 },

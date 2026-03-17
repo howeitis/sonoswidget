@@ -70,6 +70,7 @@ data class SonosWidgetState(
     val zones: List<Zone> = emptyList(),
     val queue: List<QueueItem> = emptyList(),
     val availableSources: List<MusicSource> = emptyList(),
+    val currentSource: String = "",
     val connectionMode: ConnectionMode = ConnectionMode.DISCONNECTED,
     val shuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.NONE,

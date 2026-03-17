@@ -42,11 +42,11 @@ class SonosWidget : GlanceAppWidget() {
     )
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        // Load album art from disk (saved by PlaybackService via AlbumArtLoader).
-        // This runs in provideGlance's coroutine context (off main thread).
-        val albumArt: Bitmap? = AlbumArtLoader.loadFromDisk(context)
-
         provideContent {
+            // Load album art inside provideContent so it re-reads from disk
+            // on every recomposition (track changes write new art to disk).
+            val albumArt: Bitmap? = AlbumArtLoader.loadFromDisk(context)
+
             // Read serialized state from Glance Preferences
             val prefs = currentState<Preferences>()
             val stateJson = prefs[WidgetStateStore.STATE_KEY]

@@ -173,6 +173,37 @@ object WidgetStateMapper {
     }
 
     /**
+     * Derives a human-readable source name from the Sonos CurrentURI.
+     *
+     * Sonos CurrentURI schemes identify the active input:
+     *   x-sonos-spotify:...   → Spotify
+     *   x-sonosapi-stream:... → TuneIn
+     *   x-sonosapi-radio:...  → Radio
+     *   x-sonos-http:...      → Amazon Music
+     *   x-rincon-stream:...   → Line-In
+     *   x-sonos-htastream:... → TV
+     *   x-file-cifs://...     → Music Library
+     *   x-rincon-queue:...    → Queue
+     *   aac:// or http://     → Internet Radio
+     */
+    fun mapCurrentSource(currentUri: String?): String {
+        if (currentUri.isNullOrBlank()) return ""
+        return when {
+            currentUri.contains("spotify", ignoreCase = true) -> "Spotify"
+            currentUri.contains("apple", ignoreCase = true) -> "Apple Music"
+            currentUri.startsWith("x-sonosapi-stream:") -> "TuneIn"
+            currentUri.startsWith("x-sonosapi-radio:") -> "Radio"
+            currentUri.startsWith("x-sonos-http:") -> "Amazon Music"
+            currentUri.startsWith("x-rincon-stream:") -> "Line-In"
+            currentUri.startsWith("x-sonos-htastream:") -> "TV"
+            currentUri.startsWith("x-file-cifs://") -> "Music Library"
+            currentUri.startsWith("x-rincon-queue:") -> "Queue"
+            currentUri.startsWith("aac://") || currentUri.startsWith("http://") -> "Internet Radio"
+            else -> ""
+        }
+    }
+
+    /**
      * Computes the Sonos play mode string from shuffle and repeat state.
      *
      * This is the inverse of [mapShuffleEnabled] and [mapRepeatMode].
