@@ -22,7 +22,10 @@ import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,6 +60,7 @@ class SonosRepository private constructor(
         private const val RATE_LIMIT_BACKOFF_MS = 30_000L
         private const val ERROR_BANNER_DISMISS_MS = 5_000L
         private const val OFFLINE_CHECK_INTERVAL_MS = 60_000L
+        private const val STOPPED_RESCAN_THRESHOLD_MS = 30_000L
 
         @Volatile
         private var instance: SonosRepository? = null
@@ -130,6 +134,9 @@ class SonosRepository private constructor(
     // Throttle to once every 60 seconds (same as zone group refresh).
     private var cachedOfflineSpeakers: Set<String> = emptySet()
     private var lastOfflineCheckMs: Long = 0L
+
+    // Smart speaker re-evaluation: tracks how long the current speaker has been STOPPED
+    private var stoppedSinceMs: Long = 0L
 
     // ──────────────────────────────────────────────
     // Action debouncer (Task 3.4)
@@ -220,31 +227,50 @@ class SonosRepository private constructor(
             return false
         }
 
-        val speaker = speakers.first()
-        activeSpeakerIp = speaker.ip
-        activeSpeakerPort = speaker.port
-        activeZoneId = speaker.id
-        Log.d(TAG, "Step 1: Discovered ${speaker.displayName} @ ${speaker.ip}:${speaker.port}")
+        // Use any discovered speaker to fetch the full zone group topology.
+        // Every speaker on the network returns the same topology.
+        val anySpeaker = speakers.first()
+        Log.d(TAG, "Step 1: Discovered ${speakers.size} speaker(s), querying topology via ${anySpeaker.displayName} @ ${anySpeaker.ip}:${anySpeaker.port}")
 
-        val zoneGroups = controller.getZoneGroupState(speaker.ip, speaker.port)
-        if (zoneGroups != null) {
+        val zoneGroups = controller.getZoneGroupState(anySpeaker.ip, anySpeaker.port)
+        if (zoneGroups != null && zoneGroups.isNotEmpty()) {
             cachedZoneGroups = zoneGroups
             lastZoneRefreshMs = System.currentTimeMillis()
 
-            val coordinator = findCoordinator(zoneGroups, speaker)
-            if (coordinator != null) {
-                activeSpeakerIp = coordinator.ip
-                activeSpeakerPort = coordinator.port
-                activeZoneId = coordinator.uuid
+            // Find the best coordinator: prefer one that is currently PLAYING
+            val bestCoordinator = findBestCoordinator(zoneGroups)
+            if (bestCoordinator != null) {
+                activeSpeakerIp = bestCoordinator.ip
+                activeSpeakerPort = bestCoordinator.port
+                activeZoneId = bestCoordinator.uuid
+                Log.d(TAG, "Step 1: Selected coordinator ${bestCoordinator.zoneName} @ ${bestCoordinator.ip}")
+            } else {
+                // Fallback: redirect discovered speaker to its group coordinator
+                val coordinator = findCoordinator(zoneGroups, anySpeaker)
+                if (coordinator != null) {
+                    activeSpeakerIp = coordinator.ip
+                    activeSpeakerPort = coordinator.port
+                    activeZoneId = coordinator.uuid
+                } else {
+                    activeSpeakerIp = anySpeaker.ip
+                    activeSpeakerPort = anySpeaker.port
+                    activeZoneId = anySpeaker.id
+                }
             }
+        } else {
+            // No zone groups — use the discovered speaker directly
+            activeSpeakerIp = anySpeaker.ip
+            activeSpeakerPort = anySpeaker.port
+            activeZoneId = anySpeaker.id
         }
 
         val ip = activeSpeakerIp ?: return false
-        val zoneId = activeZoneId ?: speaker.id
+        val zoneId = activeZoneId ?: anySpeaker.id
         val zoneName = cachedZoneGroups?.flatMap { it.members }
-            ?.find { it.uuid == zoneId }?.zoneName ?: speaker.displayName
+            ?.find { it.uuid == zoneId }?.zoneName ?: anySpeaker.displayName
         preferences.saveActiveSpeaker(zoneId, zoneName, ip, activeSpeakerPort)
 
+        stoppedSinceMs = 0L
         cacheConnection(ConnectionMode.LOCAL_SSDP)
         return true
     }
@@ -363,6 +389,39 @@ class SonosRepository private constructor(
         if (transportInfo == null && positionInfo == null && volumeInfo == null) {
             Log.w(TAG, "All local polls failed — speaker at $ip may be unreachable")
             return handleLocalFailure()
+        }
+
+        // ── Smart speaker re-evaluation ──
+        // If the current coordinator is STOPPED for 30+ seconds, scan all
+        // coordinators for one that is PLAYING and switch to it automatically.
+        val transportState = transportInfo?.state
+        if (transportState == "STOPPED" || transportState == "NO_MEDIA_PRESENT") {
+            val now2 = System.currentTimeMillis()
+            if (stoppedSinceMs == 0L) {
+                stoppedSinceMs = now2
+            } else if (now2 - stoppedSinceMs >= STOPPED_RESCAN_THRESHOLD_MS) {
+                Log.d(TAG, "Speaker STOPPED for ${(now2 - stoppedSinceMs) / 1000}s — scanning for playing coordinator")
+                stoppedSinceMs = now2 // Reset to wait another 30s before next scan
+
+                val freshGroups = controller.getZoneGroupState(ip, port)
+                if (freshGroups != null && freshGroups.isNotEmpty()) {
+                    cachedZoneGroups = freshGroups
+                    lastZoneRefreshMs = now2
+
+                    val better = findBestCoordinator(freshGroups)
+                    if (better != null && better.uuid != activeZoneId) {
+                        Log.d(TAG, "Switching to playing coordinator: ${better.zoneName} @ ${better.ip}")
+                        activeSpeakerIp = better.ip
+                        activeSpeakerPort = better.port
+                        activeZoneId = better.uuid
+                        preferences.saveActiveSpeaker(better.uuid, better.zoneName, better.ip, better.port)
+                        return pollLocal() // Re-poll with the new speaker
+                    }
+                }
+            }
+        } else {
+            // Speaker is PLAYING or PAUSED — reset the stopped timer
+            stoppedSinceMs = 0L
         }
 
         val now = System.currentTimeMillis()
@@ -749,6 +808,7 @@ class SonosRepository private constructor(
                     coordinator.port
                 )
                 Log.d(TAG, "Switched zone to: ${coordinator.zoneName} @ ${coordinator.ip}")
+                stoppedSinceMs = 0L
                 pollAndUpdate()
                 return true
             }
@@ -1039,5 +1099,55 @@ class SonosRepository private constructor(
             }
         }
         return null
+    }
+
+    /**
+     * Finds the best coordinator across all zone groups by checking transport state.
+     *
+     * Queries each group's coordinator for its current playback state and picks
+     * the best one in priority order:
+     *   1. Currently PLAYING
+     *   2. Currently PAUSED_PLAYBACK
+     *   3. Any reachable coordinator
+     *   4. First coordinator (fallback)
+     *
+     * Probes are run in parallel to minimize latency (~200ms per speaker).
+     */
+    private data class CoordinatorProbe(
+        val member: ZoneGroupMember,
+        val transportState: String?
+    )
+
+    private suspend fun findBestCoordinator(
+        zoneGroups: List<ZoneGroup>
+    ): ZoneGroupMember? {
+        val coordinators = zoneGroups.mapNotNull { group ->
+            group.members.find { it.isCoordinator }
+        }
+
+        if (coordinators.isEmpty()) return null
+        if (coordinators.size == 1) return coordinators.first()
+
+        Log.d(TAG, "Probing ${coordinators.size} coordinator(s) for playing state...")
+
+        // Probe all coordinators in parallel
+        val probes: List<CoordinatorProbe> = coroutineScope {
+            coordinators.map { coordinator ->
+                async(Dispatchers.IO) {
+                    val info = controller.getTransportInfo(coordinator.ip, coordinator.port)
+                    Log.d(TAG, "  ${coordinator.zoneName} @ ${coordinator.ip}: ${info?.state ?: "unreachable"}")
+                    CoordinatorProbe(coordinator, info?.state)
+                }
+            }.map { it.await() }
+        }
+
+        // Priority: PLAYING > PAUSED > any reachable > first
+        val best = probes.find { it.transportState == "PLAYING" }?.member
+            ?: probes.find { it.transportState == "PAUSED_PLAYBACK" }?.member
+            ?: probes.find { it.transportState != null }?.member
+            ?: coordinators.first()
+
+        Log.d(TAG, "Best coordinator: ${best.zoneName} @ ${best.ip}")
+        return best
     }
 }
