@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.updateAppWidgetState
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.SonosWidget
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
@@ -52,9 +53,7 @@ object WidgetStateStore {
         for (glanceId in glanceIds) {
             try {
                 updateAppWidgetState(context, glanceId) { prefs ->
-                    prefs.toMutablePreferences().apply {
-                        this[STATE_KEY] = json
-                    }
+                    prefs[STATE_KEY] = json
                 }
                 widget.update(context, glanceId)
             } catch (e: Exception) {
@@ -81,6 +80,9 @@ object WidgetStateStore {
             put("zones", JSONArray().apply {
                 state.zones.forEach { put(serializeZone(it)) }
             })
+            put("queue", JSONArray().apply {
+                state.queue.forEach { put(serializeQueueItem(it)) }
+            })
             put("connectionMode", state.connectionMode.name)
             put("shuffleEnabled", state.shuffleEnabled)
             put("repeatMode", state.repeatMode.name)
@@ -102,6 +104,7 @@ object WidgetStateStore {
                 activeZone = deserializeZone(obj.optJSONObject("activeZone")),
                 volume = obj.optInt("volume", 50),
                 zones = deserializeZoneList(obj.optJSONArray("zones")),
+                queue = deserializeQueueList(obj.optJSONArray("queue")),
                 connectionMode = try {
                     ConnectionMode.valueOf(obj.optString("connectionMode", "DISCONNECTED"))
                 } catch (_: Exception) {
@@ -161,6 +164,30 @@ object WidgetStateStore {
         if (arr == null) return emptyList()
         return (0 until arr.length()).map { i ->
             deserializeZone(arr.optJSONObject(i))
+        }
+    }
+
+    private fun serializeQueueItem(item: QueueItem): JSONObject = JSONObject().apply {
+        put("trackName", item.trackName)
+        put("artist", item.artist)
+        put("thumbnailUrl", item.thumbnailUrl ?: JSONObject.NULL)
+        put("position", item.position)
+    }
+
+    private fun deserializeQueueItem(obj: JSONObject?): QueueItem {
+        if (obj == null) return QueueItem()
+        return QueueItem(
+            trackName = obj.optString("trackName", ""),
+            artist = obj.optString("artist", ""),
+            thumbnailUrl = if (obj.isNull("thumbnailUrl")) null else obj.optString("thumbnailUrl"),
+            position = obj.optInt("position", 0)
+        )
+    }
+
+    private fun deserializeQueueList(arr: JSONArray?): List<QueueItem> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).map { i ->
+            deserializeQueueItem(arr.optJSONObject(i))
         }
     }
 

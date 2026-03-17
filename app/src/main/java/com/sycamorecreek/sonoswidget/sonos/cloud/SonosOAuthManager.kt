@@ -10,6 +10,7 @@ import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import com.sycamorecreek.sonoswidget.BuildConfig
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -19,7 +20,7 @@ import java.util.concurrent.TimeUnit
  * Flow:
  * 1. [launchLogin] opens a Custom Tab to the Sonos authorization endpoint
  * 2. User signs in and grants access
- * 3. Sonos redirects to sonoswidget://callback?code=...&state=...
+ * 3. Sonos redirects to https://sycamorecreekconsulting.com/callback?code=...&state=...
  * 4. [handleCallback] exchanges the authorization code for tokens
  * 5. Tokens are stored securely in [TokenStore]
  *
@@ -40,12 +41,11 @@ class SonosOAuthManager(
         private const val AUTH_BASE = "https://api.sonos.com/login/v3/oauth"
         private const val TOKEN_URL = "https://api.sonos.com/login/v3/oauth/access"
 
-        // App credentials — in production these should be in BuildConfig or a secrets manager
-        // These are placeholder values; replace with actual Sonos Developer Portal credentials
-        const val CLIENT_ID = "SONOS_CLIENT_ID"
-        const val CLIENT_SECRET = "SONOS_CLIENT_SECRET"
+        // App credentials — loaded from local.properties via BuildConfig (gitignored)
+        val CLIENT_ID = BuildConfig.SONOS_CLIENT_ID
+        val CLIENT_SECRET = BuildConfig.SONOS_CLIENT_SECRET
 
-        const val REDIRECT_URI = "sonoswidget://callback"
+        const val REDIRECT_URI = "https://sycamorecreekconsulting.com/callback"
         private const val SCOPE = "playback-control-all"
     }
 
@@ -77,7 +77,7 @@ class SonosOAuthManager(
     /**
      * Exchanges an authorization code for access and refresh tokens.
      *
-     * Called when the app receives the sonoswidget://callback redirect.
+     * Called when the app receives the https://sycamorecreekconsulting.com/callback redirect.
      *
      * @param code  The authorization code from the callback URI
      * @return true if tokens were obtained and stored successfully

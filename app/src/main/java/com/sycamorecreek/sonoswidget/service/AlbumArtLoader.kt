@@ -83,7 +83,7 @@ object AlbumArtLoader {
         }
 
         val resolvedUrl = resolveUrl(artUrl, speakerIp)
-        Log.d(TAG, "Loading album art: $resolvedUrl")
+        Log.d(TAG, "Loading album art: raw='$artUrl' resolved='$resolvedUrl' speakerIp=$speakerIp")
 
         val bitmap = fetchBitmap(context, resolvedUrl)
         if (bitmap != null) {

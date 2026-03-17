@@ -86,6 +86,8 @@ fun ExpandedLayout(
             .padding(12.dp),
         contentAlignment = Alignment.TopCenter
     ) {
+        // Glance Column has a 10-element limit. Group sections into logical
+        // containers to stay well under the cap.
         Column(modifier = GlanceModifier.fillMaxWidth()) {
 
             // ── Inline error banner (auto-dismissed after 5s by service) ──
@@ -94,88 +96,90 @@ fun ExpandedLayout(
                 Spacer(modifier = GlanceModifier.height(6.dp))
             }
 
-            // ── Now Playing: album art + track info ──
-            NowPlayingSection(
-                state = state,
-                albumArt = albumArt,
-                controlsDisabled = controlsDisabled,
-                hasTrack = hasTrack,
-                textPrimary = textPrimary,
-                textSecondary = textSecondary,
-                chipBg = chipBg
-            )
-
-            // ── Static progress bar with time labels (Task 3.5) ──
-            if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
-                Spacer(modifier = GlanceModifier.height(10.dp))
-                StaticProgressBar(
-                    elapsedMs = state.currentTrack.elapsedMs,
-                    durationMs = state.currentTrack.durationMs,
-                    accentColor = accentColor,
-                    trackColor = chipBg,
-                    barHeight = 4.dp,
-                    showTimeLabels = true,
-                    timeLabelColor = textSecondary
+            // ── Group 1: Now Playing + progress bar ──
+            Column(modifier = GlanceModifier.fillMaxWidth()) {
+                NowPlayingSection(
+                    state = state,
+                    albumArt = albumArt,
+                    controlsDisabled = controlsDisabled,
+                    hasTrack = hasTrack,
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary,
+                    chipBg = chipBg
                 )
+
+                if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
+                    Spacer(modifier = GlanceModifier.height(10.dp))
+                    StaticProgressBar(
+                        elapsedMs = state.currentTrack.elapsedMs,
+                        durationMs = state.currentTrack.durationMs,
+                        accentColor = accentColor,
+                        trackColor = chipBg,
+                        barHeight = 4.dp,
+                        showTimeLabels = true,
+                        timeLabelColor = textSecondary
+                    )
+                }
             }
 
             Spacer(modifier = GlanceModifier.height(8.dp))
 
-            // ── Transport controls bar ──
-            TransportControlsBar(
-                state = state,
-                controlsDisabled = controlsDisabled,
-                textPrimary = textPrimary,
-                disabledColor = disabledColor,
-                accentColor = accentColor
-            )
+            // ── Group 2: Transport controls + volume ──
+            Column(modifier = GlanceModifier.fillMaxWidth()) {
+                TransportControlsBar(
+                    state = state,
+                    controlsDisabled = controlsDisabled,
+                    textPrimary = textPrimary,
+                    disabledColor = disabledColor,
+                    accentColor = accentColor
+                )
 
-            Spacer(modifier = GlanceModifier.height(8.dp))
+                Spacer(modifier = GlanceModifier.height(8.dp))
 
-            // ── Volume + zone selector ──
-            VolumeSection(
-                state = state,
-                controlsDisabled = controlsDisabled,
-                textPrimary = textPrimary,
-                textSecondary = textSecondary,
-                chipBg = chipBg,
-                accentColor = accentColor
-            )
-
-            Spacer(modifier = GlanceModifier.height(10.dp))
-
-            // ── Speaker grouping panel ──
-            SpeakerGroupingSection(
-                state = state,
-                controlsDisabled = controlsDisabled,
-                textPrimary = textPrimary,
-                textSecondary = textSecondary,
-                accentColor = accentColor,
-                chipBg = chipBg,
-                disabledColor = disabledColor,
-                sectionLabelColor = sectionLabelColor
-            )
+                VolumeSection(
+                    state = state,
+                    controlsDisabled = controlsDisabled,
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary,
+                    chipBg = chipBg,
+                    accentColor = accentColor
+                )
+            }
 
             Spacer(modifier = GlanceModifier.height(10.dp))
 
-            // ── Queue list ──
-            QueueSection(
-                state = state,
-                textPrimary = textPrimary,
-                textSecondary = textSecondary,
-                sectionLabelColor = sectionLabelColor,
-                chipBg = chipBg
-            )
+            // ── Group 3: Speakers + queue + source ──
+            Column(modifier = GlanceModifier.fillMaxWidth()) {
+                SpeakerGroupingSection(
+                    state = state,
+                    controlsDisabled = controlsDisabled,
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary,
+                    accentColor = accentColor,
+                    chipBg = chipBg,
+                    disabledColor = disabledColor,
+                    sectionLabelColor = sectionLabelColor
+                )
 
-            Spacer(modifier = GlanceModifier.height(8.dp))
+                Spacer(modifier = GlanceModifier.height(10.dp))
 
-            // ── Source bar ──
-            SourceBarSection(
-                state = state,
-                textSecondary = textSecondary,
-                chipBg = chipBg,
-                sectionLabelColor = sectionLabelColor
-            )
+                QueueSection(
+                    state = state,
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary,
+                    sectionLabelColor = sectionLabelColor,
+                    chipBg = chipBg
+                )
+
+                Spacer(modifier = GlanceModifier.height(8.dp))
+
+                SourceBarSection(
+                    state = state,
+                    textSecondary = textSecondary,
+                    chipBg = chipBg,
+                    sectionLabelColor = sectionLabelColor
+                )
+            }
 
             // ── Permission hint (one-time) ──
             if (state.showPermissionHint) {

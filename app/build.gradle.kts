@@ -1,9 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.hilt)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.ksp)
+}
+
+// Sonos Cloud API credentials — loaded from local.properties (gitignored)
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
 
 android {
@@ -16,6 +23,9 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0.0"
+
+        buildConfigField("String", "SONOS_CLIENT_ID", "\"${localProps.getProperty("SONOS_CLIENT_ID", "")}\"")
+        buildConfigField("String", "SONOS_CLIENT_SECRET", "\"${localProps.getProperty("SONOS_CLIENT_SECRET", "")}\"")
     }
 
     buildTypes {
@@ -39,6 +49,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

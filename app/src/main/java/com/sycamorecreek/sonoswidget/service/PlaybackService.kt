@@ -75,6 +75,7 @@ class PlaybackService : Service() {
         // Intent actions
         const val ACTION_START = "com.sycamorecreek.sonoswidget.action.START_PLAYBACK_SERVICE"
         const val ACTION_STOP = "com.sycamorecreek.sonoswidget.action.STOP_PLAYBACK_SERVICE"
+        const val ACTION_POLL_NOW = "com.sycamorecreek.sonoswidget.action.POLL_NOW"
 
         /**
          * Starts the playback service as a foreground service.
@@ -89,6 +90,17 @@ class PlaybackService : Service() {
                 action = ACTION_START
             }
             context.startForegroundService(intent)
+        }
+
+        /**
+         * Triggers an immediate poll cycle, resetting any backoff.
+         * Call after events like OAuth login or manual IP add.
+         */
+        fun pollNow(context: Context) {
+            val intent = Intent(context, PlaybackService::class.java).apply {
+                action = ACTION_POLL_NOW
+            }
+            context.startService(intent)
         }
 
         /**
@@ -141,6 +153,19 @@ class PlaybackService : Service() {
                 stopPolling()
                 stopSelf()
                 return START_NOT_STICKY
+            }
+            ACTION_POLL_NOW -> {
+                Log.d(TAG, "Immediate poll requested — resetting backoff")
+                consecutiveDisconnects = 0
+                idleStartMs = 0L
+                serviceScope.launch {
+                    try {
+                        pollOnce()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Immediate poll failed", e)
+                    }
+                }
+                return START_STICKY
             }
             else -> {
                 Log.d(TAG, "Start requested")

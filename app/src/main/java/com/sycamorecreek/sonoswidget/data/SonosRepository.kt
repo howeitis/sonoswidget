@@ -1,6 +1,8 @@
 package com.sycamorecreek.sonoswidget.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import com.sycamorecreek.sonoswidget.service.AlbumArtLoader
 import com.sycamorecreek.sonoswidget.service.ThemeExtractor
@@ -169,6 +171,13 @@ class SonosRepository private constructor(
     fun hasLocalNetworkPermission(): Boolean =
         controller.hasLocalNetworkPermission(context)
 
+    private fun isOnWifi(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
     /**
      * Walks the tiered fallback chain:
      *   1. SSDP/mDNS (concurrent, 2s timeout)
@@ -180,6 +189,8 @@ class SonosRepository private constructor(
     suspend fun discoverAndConnect(): Boolean {
         // Clear stale error states on fresh discovery
         clearErrorStates()
+
+        Log.d(TAG, "discoverAndConnect: onWifi=${isOnWifi()}, hasPermission=${hasLocalNetworkPermission()}")
 
         if (tryLocalDiscovery()) return true
         if (tryManualIps()) return true
@@ -245,9 +256,11 @@ class SonosRepository private constructor(
             return false
         }
 
-        Log.d(TAG, "Step 2: Trying ${manualIps.size} manual IP(s)...")
+        Log.d(TAG, "Step 2: Trying ${manualIps.size} manual IP(s): $manualIps")
         for (ip in manualIps) {
+            Log.d(TAG, "Step 2: Testing SOAP GetTransportInfo on $ip:1400...")
             val info = controller.getTransportInfo(ip)
+            Log.d(TAG, "Step 2: $ip result: ${info?.state ?: "null (unreachable)"}")
             if (info != null) {
                 activeSpeakerIp = ip
                 activeSpeakerPort = 1400
@@ -257,13 +270,26 @@ class SonosRepository private constructor(
                 if (zoneGroups != null) {
                     cachedZoneGroups = zoneGroups
                     lastZoneRefreshMs = System.currentTimeMillis()
-                    val coordinator = zoneGroups.flatMap { it.members }
-                        .find { it.isCoordinator && it.ip == ip }
-                    activeZoneId = coordinator?.uuid
+
+                    // Find the coordinator for the group this IP belongs to.
+                    // The manual IP may be a satellite/surround speaker — AVTransport
+                    // commands (GetPositionInfo, play/pause) only work on the coordinator.
+                    val coordinator = findCoordinatorByIp(zoneGroups, ip)
+                    if (coordinator != null && coordinator.ip != ip) {
+                        Log.d(TAG, "Step 2: Manual IP $ip is not coordinator, redirecting to ${coordinator.zoneName} @ ${coordinator.ip}")
+                        activeSpeakerIp = coordinator.ip
+                        activeSpeakerPort = coordinator.port
+                        activeZoneId = coordinator.uuid
+                    } else {
+                        activeZoneId = coordinator?.uuid
+                    }
                 }
 
                 preferences.saveActiveSpeaker(
-                    activeZoneId ?: ip, "Manual", ip, 1400
+                    activeZoneId ?: ip,
+                    "Manual",
+                    activeSpeakerIp ?: ip,
+                    activeSpeakerPort
                 )
                 cacheConnection(ConnectionMode.LOCAL_MANUAL_IP)
                 return true
@@ -275,6 +301,7 @@ class SonosRepository private constructor(
     }
 
     private suspend fun tryCloudFallback(): Boolean {
+        Log.d(TAG, "Step 3: Cloud isLoggedIn=${cloudController.isLoggedIn}")
         if (!cloudController.isLoggedIn) {
             Log.d(TAG, "Step 3: Cloud not available (not logged in)")
             return false
@@ -283,7 +310,7 @@ class SonosRepository private constructor(
         Log.d(TAG, "Step 3: Trying Sonos Cloud API...")
         val cloudState = cloudController.getPlaybackStatus()
         if (cloudState != null) {
-            Log.d(TAG, "Step 3: Cloud API connected")
+            Log.d(TAG, "Step 3: Cloud API connected — ${cloudState.zones.size} zone(s), state=${cloudState.playbackState}")
             activeSpeakerIp = null
             _widgetState.value = cloudState
             WidgetStateStore.pushState(context, cloudState)
@@ -347,8 +374,9 @@ class SonosRepository private constructor(
         val currentTrackNum = positionInfo?.trackNum ?: 0
         if (currentTrackNum != lastQueueTrackNum) {
             lastQueueTrackNum = currentTrackNum
-            cachedQueue = controller.browseQueue(ip, port)
-            Log.d(TAG, "Queue refreshed: ${cachedQueue?.size ?: 0} item(s)")
+            // Start browsing from current track position to get "up next" items
+            cachedQueue = controller.browseQueue(ip, port, startIndex = currentTrackNum, count = 20)
+            Log.d(TAG, "Queue refreshed: ${cachedQueue?.size ?: 0} item(s), startIndex=$currentTrackNum")
         }
 
         cachedTransportSettings = controller.getTransportSettings(ip, port)
@@ -381,11 +409,13 @@ class SonosRepository private constructor(
             offlineSpeakerIds = detectOfflineSpeakers()
         )
 
+        Log.d(TAG, "Album art URL: ${state.currentTrack.artUrl ?: "(null)"}")
         val artBitmap = AlbumArtLoader.loadAndCache(
             context = context,
             artUrl = state.currentTrack.artUrl,
             speakerIp = ip
         )
+        Log.d(TAG, "Album art loaded: ${artBitmap != null}")
         if (artBitmap != null) {
             val palette = ThemeExtractor.extractFromBitmap(artBitmap)
             state = state.copy(colorPalette = palette)
@@ -971,8 +1001,8 @@ class SonosRepository private constructor(
         currentTrackNum: Int
     ): List<QueueItem> {
         if (soapItems.isNullOrEmpty()) return emptyList()
-        return soapItems
-            .filter { it.position > currentTrackNum }
+        // Items are already fetched starting from currentTrackNum, so no position filter needed
+        val items = soapItems
             .take(20)
             .map { item ->
                 QueueItem(
@@ -982,14 +1012,23 @@ class SonosRepository private constructor(
                     position = item.position
                 )
             }
+        Log.d(TAG, "Queue: ${items.size} upcoming items, first=${items.firstOrNull()?.trackName}")
+        return items
     }
 
     private fun findCoordinator(
         zoneGroups: List<ZoneGroup>,
         discoveredSpeaker: DiscoveredSpeaker
     ): ZoneGroupMember? {
+        return findCoordinatorByIp(zoneGroups, discoveredSpeaker.ip)
+    }
+
+    private fun findCoordinatorByIp(
+        zoneGroups: List<ZoneGroup>,
+        ip: String
+    ): ZoneGroupMember? {
         for (group in zoneGroups) {
-            val isMember = group.members.any { it.ip == discoveredSpeaker.ip }
+            val isMember = group.members.any { it.ip == ip }
             if (isMember) {
                 return group.members.find { it.isCoordinator }
             }

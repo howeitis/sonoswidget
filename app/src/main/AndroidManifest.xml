@@ -12,7 +12,8 @@
 
     <!-- Android 16 Local Network Protections: required for LAN device access
          (SSDP multicast, mDNS queries, HTTP to local IPs) -->
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
 
     <!-- Foreground service for real-time playback state updates -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -47,14 +48,22 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- OAuth callback redirect: sonoswidget://callback -->
-            <intent-filter>
+            <!-- OAuth callback redirect: https://sycamorecreekconsulting.com/callback -->
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
-                    android:scheme="sonoswidget"
-                    android:host="callback" />
+                    android:scheme="https"
+                    android:host="sycamorecreekconsulting.com"
+                    android:path="/callback" />
+            </intent-filter>
+            <!-- Custom scheme fallback for OAuth (if App Links verification fails) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sonoswidget" android:host="callback" />
             </intent-filter>
         </activity>
 

@@ -11,9 +11,9 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.MulticastSocket
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -84,7 +84,7 @@ class SsdpDiscovery {
      */
     private fun collectSsdpResponses(): List<String> {
         val locations = mutableSetOf<String>()
-        val socket = DatagramSocket(null)
+        val socket = MulticastSocket(null)
 
         try {
             socket.reuseAddress = true
@@ -94,8 +94,11 @@ class SsdpDiscovery {
             val message = buildMSearchMessage()
             val group = InetAddress.getByName(SSDP_ADDRESS)
             val packet = DatagramPacket(message.toByteArray(), message.length, group, SSDP_PORT)
+            // Send twice — some Wi-Fi radios drop the first multicast packet during wake-up
             socket.send(packet)
-            Log.d(TAG, "M-SEARCH sent to $SSDP_ADDRESS:$SSDP_PORT")
+            Thread.sleep(20)
+            socket.send(packet)
+            Log.d(TAG, "M-SEARCH sent (x2) to $SSDP_ADDRESS:$SSDP_PORT")
 
             val buffer = ByteArray(4096)
             var receivedFirst = false

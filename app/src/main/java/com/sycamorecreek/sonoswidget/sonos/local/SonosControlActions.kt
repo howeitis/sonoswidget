@@ -518,7 +518,9 @@ class SonosControlActions(
      */
     private fun extractDidlValue(didl: String, tag: String): String? {
         val pattern = "<$tag[^>]*>([^<]*)</$tag>"
-        return Regex(pattern).find(didl)?.groupValues?.get(1)?.trim()?.ifEmpty { null }
+        return Regex(pattern).find(didl)?.groupValues?.get(1)?.trim()
+            ?.let { decodeXmlEntities(it) }  // decode inner XML entities (e.g., &amp; in URLs)
+            ?.ifEmpty { null }
     }
 
     /**
@@ -551,8 +553,14 @@ class SonosControlActions(
             val coordinatorId = extractXmlAttribute(groupAttrs, "Coordinator") ?: continue
             val groupId = extractXmlAttribute(groupAttrs, "ID") ?: coordinatorId
 
-            // Match each <ZoneGroupMember .../> within this group
-            val memberPattern = Regex("""<ZoneGroupMember\s+([^/]*?)/>""", RegexOption.DOT_MATCHES_ALL)
+            // Match ZoneGroupMember in both forms:
+            //   Self-closing: <ZoneGroupMember attrs/>
+            //   With children: <ZoneGroupMember attrs>...<Satellite .../></ZoneGroupMember>
+            // Surround sound setups (Arc + surrounds + sub) use the non-self-closing form.
+            val memberPattern = Regex(
+                """<ZoneGroupMember\s+([^>]*?)(?:/>|>(.*?)</ZoneGroupMember>)""",
+                RegexOption.DOT_MATCHES_ALL
+            )
             val members = mutableListOf<ZoneGroupMember>()
 
             for (memberMatch in memberPattern.findAll(groupBody)) {

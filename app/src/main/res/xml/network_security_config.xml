@@ -1,16 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Network Security Config for SonosWidget.
-    Permits cleartext HTTP traffic ONLY to local network ranges
-    (required for UPnP/SOAP communication with Sonos speakers).
-    All other traffic requires HTTPS.
+    Permits cleartext HTTP traffic to ALL destinations because Sonos
+    speakers are accessed by raw IP address (e.g. http://192.168.1.10:1400),
+    and Android's <domain> rules only match DNS hostnames, not IPs.
+
+    The app only makes cleartext requests to local Sonos speakers (UPnP/SOAP
+    on port 1400). All external API traffic (Sonos Cloud, OAuth) uses HTTPS.
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <!-- Local network ranges where Sonos speakers live -->
-        <domain includeSubdomains="true">192.168.0.0</domain>
-        <domain includeSubdomains="true">10.0.0.0</domain>
-        <domain includeSubdomains="true">172.16.0.0</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

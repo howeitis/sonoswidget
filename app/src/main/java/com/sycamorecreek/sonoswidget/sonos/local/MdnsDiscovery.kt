@@ -76,7 +76,7 @@ class MdnsDiscovery {
                                     listOf(
                                         DiscoveredSpeaker(
                                             ip = host,
-                                            port = resolved.port,
+                                            port = 1400, // UPnP/SOAP always on 1400, not the mDNS-advertised port (often 1443)
                                             id = resolved.serviceName,
                                             displayName = resolved.serviceName
                                         )

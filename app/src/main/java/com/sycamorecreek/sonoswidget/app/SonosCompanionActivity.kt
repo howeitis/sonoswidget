@@ -1,9 +1,15 @@
 package com.sycamorecreek.sonoswidget.app
 
+import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -47,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -57,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import com.sycamorecreek.sonoswidget.data.SonosPreferences
 import com.sycamorecreek.sonoswidget.data.SonosRepository
 import com.sycamorecreek.sonoswidget.service.AlbumArtLoader
+import com.sycamorecreek.sonoswidget.service.PlaybackService
 import com.sycamorecreek.sonoswidget.service.WidgetStateStore
 import com.sycamorecreek.sonoswidget.sonos.cloud.CloudSonosController
 import com.sycamorecreek.sonoswidget.sonos.cloud.SonosCloudApi
@@ -65,6 +73,7 @@ import com.sycamorecreek.sonoswidget.sonos.cloud.TokenStore
 import com.sycamorecreek.sonoswidget.widget.Zone
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -104,14 +113,35 @@ class SonosCompanionActivity : ComponentActivity() {
 
     // Settings state
     private val manualIps = mutableStateListOf<String>()
-    private val ipTestResults = mutableMapOf<String, Boolean?>()
+    private val ipTestResults = mutableStateMapOf<String, Boolean?>()
     private var discoveredZones by mutableStateOf<List<Zone>>(emptyList())
     private var defaultZoneName by mutableStateOf<String?>(null)
     private var defaultZoneId by mutableStateOf<String?>(null)
     private var preferredService by mutableStateOf<String?>(null)
     private var cacheSizeBytes by mutableLongStateOf(0L)
 
+    // Connection status state
+    private var connectionStatus by mutableStateOf("Unknown")
+    private var connectedSpeakerName by mutableStateOf<String?>(null)
+    private var connectedSpeakerIp by mutableStateOf<String?>(null)
+    private var connectionMethod by mutableStateOf<String?>(null)
+    private var isOnWifi by mutableStateOf(false)
+    private var hasNearbyPermission by mutableStateOf(false)
+    private var isScanning by mutableStateOf(false)
+
     private val scope = CoroutineScope(Dispatchers.Main)
+
+    // Runtime permission launcher for NEARBY_WIFI_DEVICES (Android 13+ / targetSdk 33+)
+    private val nearbyWifiPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            Log.d(TAG, "NEARBY_WIFI_DEVICES granted — reloading settings")
+            loadSettings()
+        } else {
+            Log.w(TAG, "NEARBY_WIFI_DEVICES denied — local discovery will be unavailable")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -125,6 +155,9 @@ class SonosCompanionActivity : ComponentActivity() {
 
         // Check if launched from an OAuth callback redirect
         handleIntent(intent)
+
+        // Request NEARBY_WIFI_DEVICES permission if needed (Android 13+)
+        requestNearbyWifiPermissionIfNeeded()
 
         // Load persisted settings
         loadSettings()
@@ -143,6 +176,14 @@ class SonosCompanionActivity : ComponentActivity() {
                             isLoggedIn = isLoggedIn,
                             onSignIn = ::startOAuthLogin,
                             onSignOut = ::signOut,
+                            connectionStatus = connectionStatus,
+                            connectedSpeakerName = connectedSpeakerName,
+                            connectedSpeakerIp = connectedSpeakerIp,
+                            connectionMethod = connectionMethod,
+                            isOnWifi = isOnWifi,
+                            hasNearbyPermission = hasNearbyPermission,
+                            isScanning = isScanning,
+                            onScan = ::scanForSpeakers,
                             manualIps = manualIps,
                             ipTestResults = ipTestResults,
                             onAddIp = ::addManualIp,
@@ -176,7 +217,9 @@ class SonosCompanionActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         val data = intent?.data ?: return
 
-        if (data.scheme == "sonoswidget" && data.host == "callback") {
+        val isHttpsCallback = data.scheme == "https" && data.host == "sycamorecreekconsulting.com" && data.path == "/callback"
+        val isCustomCallback = data.scheme == "sonoswidget" && data.host == "callback"
+        if (isHttpsCallback || isCustomCallback) {
             val code = data.getQueryParameter("code")
             val state = data.getQueryParameter("state")
             val error = data.getQueryParameter("error")
@@ -223,7 +266,9 @@ class SonosCompanionActivity : ComponentActivity() {
                 isLoggedIn = true
                 uiState = CompanionUiState.SUCCESS
                 statusMessage = "Successfully signed in to Sonos!"
-                Log.d(TAG, "OAuth flow completed successfully")
+                Log.d(TAG, "OAuth flow completed successfully — triggering discovery")
+                // Trigger immediate discovery now that cloud credentials are available
+                PlaybackService.pollNow(applicationContext)
             } else {
                 uiState = CompanionUiState.ERROR
                 statusMessage = "Failed to complete sign in. Please try again."
@@ -239,6 +284,23 @@ class SonosCompanionActivity : ComponentActivity() {
         uiState = CompanionUiState.IDLE
         statusMessage = ""
         Log.d(TAG, "User signed out")
+    }
+
+    // ──────────────────────────────────────────────
+    // Permission handling
+    // ──────────────────────────────────────────────
+
+    private fun requestNearbyWifiPermissionIfNeeded() {
+        // NEARBY_WIFI_DEVICES is only required on Android 13 (API 33) and above
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+
+        val status = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.NEARBY_WIFI_DEVICES
+        )
+        if (status != PackageManager.PERMISSION_GRANTED) {
+            Log.d(TAG, "Requesting NEARBY_WIFI_DEVICES permission")
+            nearbyWifiPermissionLauncher.launch(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -267,6 +329,80 @@ class SonosCompanionActivity : ComponentActivity() {
             // Load cache size
             cacheSizeBytes = withContext(Dispatchers.IO) {
                 AlbumArtLoader.getDiskCacheSize(applicationContext)
+            }
+
+            // Refresh connection status
+            refreshConnectionStatus()
+        }
+    }
+
+    private fun refreshConnectionStatus() {
+        val repo = SonosRepository.getInstance(applicationContext)
+        val state = repo.widgetState.value
+
+        // Check prerequisites
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+        isOnWifi = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+        hasNearbyPermission = repo.hasLocalNetworkPermission()
+
+        // Determine connection info from widget state
+        val mode = state.connectionMode
+        connectionMethod = when (mode) {
+            com.sycamorecreek.sonoswidget.widget.ConnectionMode.LOCAL_SSDP -> "Auto-discovery (SSDP)"
+            com.sycamorecreek.sonoswidget.widget.ConnectionMode.LOCAL_MDNS -> "Auto-discovery (mDNS)"
+            com.sycamorecreek.sonoswidget.widget.ConnectionMode.LOCAL_MANUAL_IP -> "Manual IP"
+            com.sycamorecreek.sonoswidget.widget.ConnectionMode.CLOUD -> "Cloud API"
+            com.sycamorecreek.sonoswidget.widget.ConnectionMode.DISCONNECTED -> null
+        }
+
+        if (mode != com.sycamorecreek.sonoswidget.widget.ConnectionMode.DISCONNECTED) {
+            connectionStatus = "Connected"
+            connectedSpeakerName = state.activeZone.displayName.ifBlank { null }
+            // IP comes from saved prefs
+            scope.launch {
+                val saved = withContext(Dispatchers.IO) {
+                    preferences.activeSpeaker.first()
+                }
+                connectedSpeakerIp = saved?.ip
+            }
+        } else {
+            connectionStatus = if (state.isOffline) "Offline" else "Disconnected"
+            connectedSpeakerName = null
+            connectedSpeakerIp = null
+        }
+    }
+
+    private fun scanForSpeakers() {
+        if (isScanning) return
+        isScanning = true
+        connectionStatus = "Scanning..."
+        scope.launch {
+            try {
+                val repo = SonosRepository.getInstance(applicationContext)
+                val found = withContext(Dispatchers.IO) {
+                    repo.discoverAndConnect()
+                }
+                if (found) {
+                    // Trigger an immediate poll to populate full state
+                    withContext(Dispatchers.IO) {
+                        repo.pollAndUpdate()
+                    }
+                    refreshConnectionStatus()
+                    // Reload zones
+                    discoveredZones = repo.widgetState.value.zones
+                    PlaybackService.pollNow(applicationContext)
+                } else {
+                    connectionStatus = "No speakers found"
+                    connectionMethod = null
+                    connectedSpeakerName = null
+                    connectedSpeakerIp = null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Scan failed", e)
+                connectionStatus = "Scan failed: ${e.message}"
+            } finally {
+                isScanning = false
             }
         }
     }
@@ -302,6 +438,10 @@ class SonosCompanionActivity : ComponentActivity() {
                 testSpeakerConnection(ip, 1400)
             }
             ipTestResults[ip] = reachable
+            if (reachable) {
+                Log.d(TAG, "Manual IP $ip reachable — triggering discovery")
+                PlaybackService.pollNow(applicationContext)
+            }
         }
     }
 
@@ -404,8 +544,11 @@ private fun testSpeakerConnection(ip: String, port: Int): Boolean {
             .head()
             .build()
         val response = client.newCall(request).execute()
-        response.use { it.isSuccessful }
-    } catch (_: Exception) {
+        val success = response.use { it.isSuccessful }
+        Log.d("SonosCompanion", "Manual IP test $ip:$port -> HTTP ${response.code} (success=$success)")
+        success
+    } catch (e: Exception) {
+        Log.e("SonosCompanion", "Manual IP test $ip:$port failed: ${e.javaClass.simpleName}: ${e.message}")
         false
     }
 }
@@ -434,6 +577,14 @@ private fun CompanionScreen(
     isLoggedIn: Boolean,
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
+    connectionStatus: String,
+    connectedSpeakerName: String?,
+    connectedSpeakerIp: String?,
+    connectionMethod: String?,
+    isOnWifi: Boolean,
+    hasNearbyPermission: Boolean,
+    isScanning: Boolean,
+    onScan: () -> Unit,
     manualIps: List<String>,
     ipTestResults: Map<String, Boolean?>,
     onAddIp: (String) -> Unit,
@@ -472,6 +623,93 @@ private fun CompanionScreen(
         )
 
         Spacer(modifier = Modifier.height(24.dp))
+
+        // ── Connection Status Section ──
+        SettingsSection(title = "Connection Status") {
+            // Status row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val statusColor = when (connectionStatus) {
+                    "Connected" -> MaterialTheme.colorScheme.primary
+                    "Scanning..." -> MaterialTheme.colorScheme.tertiary
+                    "Offline", "Disconnected", "No speakers found" -> MaterialTheme.colorScheme.error
+                    else -> if (connectionStatus.startsWith("Scan failed")) MaterialTheme.colorScheme.error
+                           else MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Icon(
+                    imageVector = when (connectionStatus) {
+                        "Connected" -> Icons.Default.Check
+                        else -> Icons.Default.Close
+                    },
+                    contentDescription = null,
+                    tint = statusColor,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = connectionStatus,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = statusColor
+                )
+            }
+
+            // Connection details when connected
+            if (connectedSpeakerName != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                StatusRow("Speaker", connectedSpeakerName!!)
+            }
+            if (connectedSpeakerIp != null) {
+                StatusRow("IP", connectedSpeakerIp!!)
+            }
+            if (connectionMethod != null) {
+                StatusRow("Method", connectionMethod!!)
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Prerequisites
+            StatusRow("Wi-Fi", if (isOnWifi) "Connected" else "Not connected")
+            StatusRow("Nearby Devices Permission", if (hasNearbyPermission) "Granted" else "Not granted")
+
+            if (!isOnWifi) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Auto-discovery requires Wi-Fi connection to the same network as your Sonos speakers",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            } else if (!hasNearbyPermission) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Grant \"Nearby devices\" permission in app settings for auto-discovery",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = onScan,
+                enabled = !isScanning,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (isScanning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(if (isScanning) "Scanning..." else "Scan for Speakers")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         // ── Cloud Account Section ──
         SettingsSection(title = "Sonos Account") {
@@ -695,6 +933,25 @@ private fun CompanionScreen(
         }
 
         Spacer(modifier = Modifier.height(32.dp))
+    }
+}
+
+@Composable
+private fun StatusRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
 }
 
