@@ -65,9 +65,8 @@ dependencies {
     // Kotlin Coroutines
     implementation(libs.coroutines.android)
 
-    // Networking
+    // Networking (raw OkHttp + org.json; no Retrofit/serialization runtime needed)
     implementation(libs.okhttp)
-    implementation(libs.retrofit)
 
     // Image loading (Coil — raw ImageLoader API only, NOT Compose integration)
     implementation(libs.coil)

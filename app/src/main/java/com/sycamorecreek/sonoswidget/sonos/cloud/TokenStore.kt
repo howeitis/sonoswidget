@@ -24,6 +24,7 @@ class TokenStore(context: Context) {
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_EXPIRES_AT = "expires_at"
+        private const val KEY_PENDING_OAUTH_STATE = "pending_oauth_state"
         private const val EXPIRY_BUFFER_MS = 60_000L // refresh 1 minute before actual expiry
     }
 
@@ -96,4 +97,19 @@ class TokenStore(context: Context) {
         prefs.edit().clear().apply()
         Log.d(TAG, "All tokens cleared")
     }
+
+    // ──────────────────────────────────────────────
+    // OAuth CSRF state (persisted so it survives the activity being
+    // killed while the Custom Tab login is in the foreground)
+    // ──────────────────────────────────────────────
+
+    var pendingOAuthState: String?
+        get() = prefs.getString(KEY_PENDING_OAUTH_STATE, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value == null) remove(KEY_PENDING_OAUTH_STATE)
+                else putString(KEY_PENDING_OAUTH_STATE, value)
+                apply()
+            }
+        }
 }

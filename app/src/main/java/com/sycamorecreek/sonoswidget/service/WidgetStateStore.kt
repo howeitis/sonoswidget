@@ -8,6 +8,7 @@ import androidx.glance.appwidget.state.updateAppWidgetState
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
+import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidget
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
 import com.sycamorecreek.sonoswidget.widget.Track
@@ -90,6 +91,13 @@ object WidgetStateStore {
             put("colorPalette", serializeColorPalette(state.colorPalette))
             put("isReconnecting", state.isReconnecting)
             put("isRateLimited", state.isRateLimited)
+            put("isOffline", state.isOffline)
+            put("isUpdating", state.isUpdating)
+            put("errorMessage", state.errorMessage ?: JSONObject.NULL)
+            put("showPermissionHint", state.showPermissionHint)
+            put("offlineSpeakerIds", JSONArray().apply {
+                state.offlineSpeakerIds.forEach { put(it) }
+            })
             put("lastUpdatedMs", state.lastUpdatedMs)
         }.toString()
     }
@@ -113,9 +121,19 @@ object WidgetStateStore {
                     ConnectionMode.DISCONNECTED
                 },
                 shuffleEnabled = obj.optBoolean("shuffleEnabled", false),
+                repeatMode = try {
+                    RepeatMode.valueOf(obj.optString("repeatMode", "NONE"))
+                } catch (_: Exception) {
+                    RepeatMode.NONE
+                },
                 colorPalette = deserializeColorPalette(obj.optJSONObject("colorPalette")),
                 isReconnecting = obj.optBoolean("isReconnecting", false),
                 isRateLimited = obj.optBoolean("isRateLimited", false),
+                isOffline = obj.optBoolean("isOffline", false),
+                isUpdating = obj.optBoolean("isUpdating", false),
+                errorMessage = if (obj.isNull("errorMessage")) null else obj.optString("errorMessage"),
+                showPermissionHint = obj.optBoolean("showPermissionHint", false),
+                offlineSpeakerIds = deserializeStringSet(obj.optJSONArray("offlineSpeakerIds")),
                 lastUpdatedMs = obj.optLong("lastUpdatedMs", 0L)
             )
         } catch (e: Exception) {
@@ -191,6 +209,11 @@ object WidgetStateStore {
         return (0 until arr.length()).map { i ->
             deserializeQueueItem(arr.optJSONObject(i))
         }
+    }
+
+    private fun deserializeStringSet(arr: JSONArray?): Set<String> {
+        if (arr == null) return emptySet()
+        return (0 until arr.length()).mapNotNull { i -> arr.optString(i, null) }.toSet()
     }
 
     private fun serializeColorPalette(palette: WidgetColorPalette): JSONObject =

@@ -8,7 +8,6 @@ glance = "1.2.0-rc01"
 hilt = "2.58"
 coroutines = "1.9.0"
 okhttp = "4.12.0"
-retrofit = "2.11.0"
 coil = "2.7.0"
 datastore = "1.1.1"
 palette = "1.0.0"
@@ -29,7 +28,6 @@ hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
-retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
 coil = { group = "io.coil-kt", name = "coil", version.ref = "coil" }
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 palette = { group = "androidx.palette", name = "palette-ktx", version.ref = "palette" }
