@@ -117,7 +117,7 @@ fun ExpandedLayout(
                     ) {
                         SeekButton(
                             label = "-15",
-                            contentDescription = "Rewind 15 seconds",
+                            desc = "Rewind 15 seconds",
                             callback = actionRunCallback<SeekBackAction>(),
                             textColor = textSecondary
                         )
@@ -136,7 +136,7 @@ fun ExpandedLayout(
                         Spacer(modifier = GlanceModifier.width(8.dp))
                         SeekButton(
                             label = "+15",
-                            contentDescription = "Forward 15 seconds",
+                            desc = "Forward 15 seconds",
                             callback = actionRunCallback<SeekForwardAction>(),
                             textColor = textSecondary
                         )
