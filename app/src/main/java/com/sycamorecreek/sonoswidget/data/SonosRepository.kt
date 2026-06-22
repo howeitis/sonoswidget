@@ -25,6 +25,7 @@ import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,6 +56,9 @@ class SonosRepository private constructor(
     companion object {
         private const val TAG = "SonosRepository"
         private const val ZONE_REFRESH_INTERVAL_MS = 60_000L
+        // Play mode and current-source URI change rarely; no need to refetch every
+        // 2-second poll. Throttle these auxiliary queries to limit SOAP traffic/battery.
+        private const val METADATA_REFRESH_INTERVAL_MS = 15_000L
         private const val CONNECTION_CACHE_MS = 30_000L
         private const val COMMAND_TIMEOUT_MS = 3_000L
         private const val RATE_LIMIT_BACKOFF_MS = 30_000L
@@ -123,6 +127,13 @@ class SonosRepository private constructor(
     private var cachedQueue: List<QueueItemInfo>? = null
     private var lastQueueTrackNum: Int = -1
     private var cachedTransportSettings: TransportSettings? = null
+    private var lastTransportSettingsMs: Long = 0L
+    private var lastMediaInfoMs: Long = 0L
+    private var cachedSource: String = ""
+
+    // Palette extraction is expensive; only recompute when the art URL changes.
+    private var lastPaletteArtUrl: String? = null
+    private var cachedPalette: com.sycamorecreek.sonoswidget.widget.WidgetColorPalette? = null
 
     // Error state tracking
     private var rateLimitedUntilMs: Long = 0L
@@ -431,19 +442,31 @@ class SonosRepository private constructor(
         }
 
         val currentTrackNum = positionInfo?.trackNum ?: 0
-        if (currentTrackNum != lastQueueTrackNum) {
+        val trackChanged = currentTrackNum != lastQueueTrackNum
+        if (trackChanged) {
             lastQueueTrackNum = currentTrackNum
             // Start browsing from current track position to get "up next" items
             cachedQueue = controller.browseQueue(ip, port, startIndex = currentTrackNum, count = 20)
             Log.d(TAG, "Queue refreshed: ${cachedQueue?.size ?: 0} item(s), startIndex=$currentTrackNum")
         }
 
-        cachedTransportSettings = controller.getTransportSettings(ip, port)
-            ?: cachedTransportSettings
+        // Play mode (shuffle/repeat) changes rarely — refetch on a slow cadence
+        // rather than on every 2s poll cycle.
+        if (now - lastTransportSettingsMs > METADATA_REFRESH_INTERVAL_MS || cachedTransportSettings == null) {
+            cachedTransportSettings = controller.getTransportSettings(ip, port)
+                ?: cachedTransportSettings
+            lastTransportSettingsMs = now
+        }
 
-        // Fetch current media URI for source detection
-        val mediaInfo = controller.getMediaInfo(ip, port)
-        val currentSource = WidgetStateMapper.mapCurrentSource(mediaInfo?.currentUri)
+        // Current media URI for source detection — also throttled. Always refresh
+        // on a track change so the source label tracks the now-playing item.
+        // (lastMediaInfoMs starts at 0, so the first poll always fetches.)
+        if (trackChanged || now - lastMediaInfoMs > METADATA_REFRESH_INTERVAL_MS) {
+            val mediaInfo = controller.getMediaInfo(ip, port)
+            cachedSource = WidgetStateMapper.mapCurrentSource(mediaInfo?.currentUri)
+            lastMediaInfoMs = now
+        }
+        val currentSource = cachedSource
 
         val queueItems = mapQueueItems(cachedQueue, currentTrackNum)
 
@@ -481,8 +504,21 @@ class SonosRepository private constructor(
         )
         Log.d(TAG, "Album art loaded: ${artBitmap != null}")
         if (artBitmap != null) {
-            val palette = ThemeExtractor.extractFromBitmap(artBitmap)
+            // Only re-extract the palette when the art actually changed — Palette
+            // generation is CPU-heavy and the bitmap is unchanged on most polls.
+            val artUrl = state.currentTrack.artUrl
+            val palette = if (artUrl == lastPaletteArtUrl && cachedPalette != null) {
+                cachedPalette!!
+            } else {
+                ThemeExtractor.extractFromBitmap(artBitmap).also {
+                    cachedPalette = it
+                    lastPaletteArtUrl = artUrl
+                }
+            }
             state = state.copy(colorPalette = palette)
+        } else {
+            cachedPalette = null
+            lastPaletteArtUrl = null
         }
 
         cacheConnection(activeConnectionMode)
@@ -510,16 +546,20 @@ class SonosRepository private constructor(
 
         val groups = cachedZoneGroups ?: return emptySet()
         val activeIp = activeSpeakerIp ?: return emptySet()
-        val offline = mutableSetOf<String>()
 
-        for (member in groups.flatMap { it.members }) {
-            // Skip the active speaker — we already know it's online
-            if (member.ip == activeIp) continue
+        // Probe all non-active members concurrently rather than serially — a
+        // serial sweep cost up to (connect+read timeout) × member count, which
+        // could stall a poll cycle for several seconds on larger households.
+        val membersToProbe = groups.flatMap { it.members }
+            .filter { it.ip != activeIp && it.ip != "0.0.0.0" }
 
-            val info = controller.getTransportInfo(member.ip, member.port)
-            if (info == null) {
-                offline.add(member.uuid)
-            }
+        val offline = coroutineScope {
+            membersToProbe.map { member ->
+                async(Dispatchers.IO) {
+                    val info = controller.getTransportInfo(member.ip, member.port)
+                    if (info == null) member.uuid else null
+                }
+            }.awaitAll().filterNotNull().toSet()
         }
 
         cachedOfflineSpeakers = offline
@@ -724,7 +764,9 @@ class SonosRepository private constructor(
         if (delta == 0) return
 
         val currentTrackNum = lastQueueTrackNum
-        if (currentTrackNum > 0) {
+        // Under shuffle, queue track numbers don't follow play order, so a direct
+        // TRACK_NR seek would jump to the wrong song. Fall back to sequential skips.
+        if (currentTrackNum > 0 && !_widgetState.value.shuffleEnabled) {
             // Use direct queue seek for efficiency: "single skip-N command"
             val target = (currentTrackNum + delta).coerceAtLeast(1)
             Log.d(TAG, "Skip delta $delta: seeking from track $currentTrackNum to $target")

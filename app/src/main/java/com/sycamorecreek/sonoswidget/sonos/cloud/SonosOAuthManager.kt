@@ -57,6 +57,9 @@ class SonosOAuthManager(
      */
     fun launchLogin(context: Context): String {
         val state = java.util.UUID.randomUUID().toString()
+        // Persist so the CSRF check still works if the OS kills the activity
+        // while the Custom Tab is in the foreground (the common real-world path).
+        tokenStore.pendingOAuthState = state
 
         val authUrl = Uri.parse(AUTH_BASE).buildUpon()
             .appendQueryParameter("client_id", CLIENT_ID)
@@ -195,6 +198,19 @@ class SonosOAuthManager(
         }
 
         return tokenStore.accessToken
+    }
+
+    /**
+     * Verifies the OAuth callback `state` against the value persisted at login
+     * time, then clears it (single-use). Fails closed: a missing expected state
+     * (e.g. an unsolicited callback) is treated as a verification failure.
+     *
+     * @return true only if a pending state existed and matches [received].
+     */
+    fun verifyAndConsumeState(received: String?): Boolean {
+        val expected = tokenStore.pendingOAuthState
+        tokenStore.pendingOAuthState = null
+        return expected != null && expected == received
     }
 
     val isLoggedIn: Boolean

@@ -104,8 +104,6 @@ class SonosCompanionActivity : ComponentActivity() {
     private lateinit var cloudController: CloudSonosController
     private lateinit var preferences: SonosPreferences
 
-    private var pendingState: String? = null
-
     // UI state
     private var uiState by mutableStateOf(CompanionUiState.IDLE)
     private var statusMessage by mutableStateOf("")
@@ -238,9 +236,10 @@ class SonosCompanionActivity : ComponentActivity() {
                 return
             }
 
-            // Verify state parameter for CSRF protection
-            if (pendingState != null && state != pendingState) {
-                Log.e(TAG, "State mismatch: expected=$pendingState, got=$state")
+            // Verify state parameter for CSRF protection. Fails closed: an
+            // unsolicited callback with no persisted pending state is rejected.
+            if (!oAuthManager.verifyAndConsumeState(state)) {
+                Log.e(TAG, "OAuth state verification failed (got=$state)")
                 uiState = CompanionUiState.ERROR
                 statusMessage = "Security check failed (state mismatch)"
                 return
@@ -253,7 +252,7 @@ class SonosCompanionActivity : ComponentActivity() {
     private fun startOAuthLogin() {
         uiState = CompanionUiState.LOADING
         statusMessage = "Opening Sonos login..."
-        pendingState = oAuthManager.launchLogin(this)
+        oAuthManager.launchLogin(this)
     }
 
     private fun exchangeCode(code: String) {
