@@ -480,12 +480,24 @@ class SonosRepository private constructor(
         }
         val currentSource = cachedSource
 
+        // When the active room is grouped with others, volume and mute act on
+        // the whole group (GroupRenderingControl on the coordinator) rather than
+        // just the coordinator speaker.
+        val grouped = isActiveGroupGrouped()
+
         // Mute state — slow cadence, but refetched right after a toggle.
         if (muteDirty || now - lastMuteMs > METADATA_REFRESH_INTERVAL_MS) {
-            cachedMuted = controller.getMute(ip, port)?.muted ?: cachedMuted
+            val muteInfo = if (grouped) controller.getGroupMute(ip, port)
+                           else controller.getMute(ip, port)
+            cachedMuted = muteInfo?.muted ?: cachedMuted
             lastMuteMs = now
             muteDirty = false
         }
+
+        // Group volume is fetched per poll (only when grouped) so the displayed
+        // level reflects the whole group; ungrouped uses the coordinator volume
+        // already returned by pollPlaybackState.
+        val groupVolume = if (grouped) controller.getGroupVolume(ip, port)?.volume else null
 
         val queueItems = mapQueueItems(cachedQueue, currentTrackNum)
 
@@ -515,6 +527,10 @@ class SonosRepository private constructor(
             errorMessage = expiredErrorMessage(),
             offlineSpeakerIds = detectOfflineSpeakers()
         )
+
+        if (groupVolume != null) {
+            state = state.copy(volume = groupVolume)
+        }
 
         Log.d(TAG, "Album art URL: ${state.currentTrack.artUrl ?: "(null)"}")
         val artBitmap = AlbumArtLoader.loadAndCache(
@@ -840,7 +856,10 @@ class SonosRepository private constructor(
     )
 
     suspend fun setVolume(volume: Int): Boolean = routeCommand(
-        local = { ip, port -> controller.setVolume(ip, port, volume) },
+        local = { ip, port ->
+            if (isActiveGroupGrouped()) controller.setGroupVolume(ip, port, volume)
+            else controller.setVolume(ip, port, volume)
+        },
         cloud = { cloudController.setVolume(volume) }
     )
 
@@ -849,9 +868,23 @@ class SonosRepository private constructor(
         cachedMuted = muted
         muteDirty = true
         return routeCommand(
-            local = { ip, port -> controller.setMute(ip, port, muted) },
+            local = { ip, port ->
+                if (isActiveGroupGrouped()) controller.setGroupMute(ip, port, muted)
+                else controller.setMute(ip, port, muted)
+            },
             cloud = { false }
         )
+    }
+
+    /**
+     * True when the active coordinator's group contains more than one member,
+     * i.e. volume/mute should target the whole group rather than one speaker.
+     */
+    private fun isActiveGroupGrouped(): Boolean {
+        val groups = cachedZoneGroups ?: return false
+        val zoneId = activeZoneId ?: return false
+        val group = groups.find { it.coordinatorId == zoneId } ?: return false
+        return group.members.size > 1
     }
 
     suspend fun switchZone(zoneId: String): Boolean {

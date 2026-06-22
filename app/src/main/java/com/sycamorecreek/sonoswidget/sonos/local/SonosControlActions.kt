@@ -266,6 +266,71 @@ class SonosControlActions(
             ))
 
     // ──────────────────────────────────────────────
+    // GroupRenderingControl — whole-group volume & mute
+    //
+    // Invoked on the group coordinator. Unlike RenderingControl these actions
+    // take no Channel parameter and act on every speaker in the group at once
+    // (SetGroupVolume scales each member proportionally).
+    // ──────────────────────────────────────────────
+
+    /**
+     * Gets the current group volume (0–100), the average across grouped members.
+     * Returns null if the request fails.
+     */
+    suspend fun getGroupVolume(ip: String, port: Int = 1400): VolumeInfo? {
+        val xml = soapClient.invoke(
+            ip, port,
+            SonosSoapClient.Service.GROUP_RENDERING_CONTROL,
+            "GetGroupVolume",
+            listOf("InstanceID" to INSTANCE_ID)
+        ) ?: return null
+
+        return try {
+            val vol = extractXmlValue(xml, "CurrentVolume")?.toIntOrNull() ?: 0
+            VolumeInfo(volume = vol.coerceIn(0, 100))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse GetGroupVolume", e)
+            null
+        }
+    }
+
+    /** Sets the group volume (0–100), scaling each member proportionally. */
+    suspend fun setGroupVolume(ip: String, port: Int = 1400, volume: Int): Boolean =
+        invokeSimple(ip, port, SonosSoapClient.Service.GROUP_RENDERING_CONTROL, "SetGroupVolume",
+            listOf(
+                "InstanceID" to INSTANCE_ID,
+                "DesiredVolume" to volume.coerceIn(0, 100).toString()
+            ))
+
+    /**
+     * Gets the current group mute state.
+     * Returns null if the request fails.
+     */
+    suspend fun getGroupMute(ip: String, port: Int = 1400): MuteInfo? {
+        val xml = soapClient.invoke(
+            ip, port,
+            SonosSoapClient.Service.GROUP_RENDERING_CONTROL,
+            "GetGroupMute",
+            listOf("InstanceID" to INSTANCE_ID)
+        ) ?: return null
+
+        return try {
+            MuteInfo(muted = extractXmlValue(xml, "CurrentMute") == "1")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse GetGroupMute", e)
+            null
+        }
+    }
+
+    /** Sets the group mute state for the whole group. */
+    suspend fun setGroupMute(ip: String, port: Int = 1400, muted: Boolean): Boolean =
+        invokeSimple(ip, port, SonosSoapClient.Service.GROUP_RENDERING_CONTROL, "SetGroupMute",
+            listOf(
+                "InstanceID" to INSTANCE_ID,
+                "DesiredMute" to if (muted) "1" else "0"
+            ))
+
+    // ──────────────────────────────────────────────
     // AVTransport — Speaker grouping
     // ──────────────────────────────────────────────
 

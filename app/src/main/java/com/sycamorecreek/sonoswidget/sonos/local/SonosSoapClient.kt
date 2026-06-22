@@ -51,6 +51,10 @@ class SonosSoapClient(
             endpoint = "/MediaRenderer/RenderingControl/Control",
             urn = "urn:schemas-upnp-org:service:RenderingControl:1"
         ),
+        GROUP_RENDERING_CONTROL(
+            endpoint = "/MediaRenderer/GroupRenderingControl/Control",
+            urn = "urn:schemas-upnp-org:service:GroupRenderingControl:1"
+        ),
         ZONE_GROUP_TOPOLOGY(
             endpoint = "/ZoneGroupTopology/Control",
             urn = "urn:schemas-upnp-org:service:ZoneGroupTopology:1"
