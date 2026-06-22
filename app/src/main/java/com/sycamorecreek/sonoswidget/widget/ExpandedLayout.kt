@@ -183,6 +183,17 @@ fun ExpandedLayout(
                     sectionLabelColor = sectionLabelColor
                 )
 
+                if (state.favorites.isNotEmpty()) {
+                    Spacer(modifier = GlanceModifier.height(10.dp))
+                    FavoritesSection(
+                        state = state,
+                        controlsDisabled = controlsDisabled,
+                        textPrimary = textPrimary,
+                        sectionLabelColor = sectionLabelColor,
+                        chipBg = chipBg
+                    )
+                }
+
                 Spacer(modifier = GlanceModifier.height(10.dp))
 
                 QueueSection(
@@ -818,6 +829,68 @@ private fun GroupAllChip(
 // ──────────────────────────────────────────────
 // Scrollable queue list (Task 2.3)
 // ──────────────────────────────────────────────
+
+@GlanceComposable
+@androidx.compose.runtime.Composable
+private fun FavoritesSection(
+    state: SonosWidgetState,
+    controlsDisabled: Boolean,
+    textPrimary: Color,
+    sectionLabelColor: Color,
+    chipBg: Color
+) {
+    if (state.favorites.isEmpty()) return
+
+    Column(modifier = GlanceModifier.fillMaxWidth()) {
+        Text(
+            text = "Favorites",
+            style = TextStyle(
+                color = ColorProvider(sectionLabelColor),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+            )
+        )
+
+        Spacer(modifier = GlanceModifier.height(6.dp))
+
+        // Non-scrolling row (Glance has no LazyRow): show the first few
+        // favorites as equal-width tappable chips.
+        Row(modifier = GlanceModifier.fillMaxWidth()) {
+            state.favorites.take(3).forEachIndexed { index, fav ->
+                if (index > 0) Spacer(modifier = GlanceModifier.width(8.dp))
+                Box(
+                    modifier = GlanceModifier
+                        .defaultWeight()
+                        .cornerRadius(8.dp)
+                        .background(chipBg)
+                        .padding(horizontal = 10.dp, vertical = 10.dp)
+                        .semantics { contentDescription = "Play ${fav.title}" }
+                        .let { mod ->
+                            if (controlsDisabled) mod
+                            else mod.clickable(
+                                actionRunCallback<PlayFavoriteAction>(
+                                    actionParametersOf(FAVORITE_ID_KEY to fav.id)
+                                )
+                            )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = fav.title,
+                        style = TextStyle(
+                            color = ColorProvider(
+                                if (controlsDisabled) Color(0xFF555570) else textPrimary
+                            ),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
 
 @GlanceComposable
 @androidx.compose.runtime.Composable

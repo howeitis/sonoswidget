@@ -219,6 +219,16 @@ class LocalSonosController(
     ): List<QueueItemInfo>? =
         controlActions.browseQueue(ip, port, startIndex, count)
 
+    /** Browse the user's Sonos Favorites (FV:2). */
+    suspend fun browseFavorites(ip: String, port: Int = 1400, count: Int = 50): List<FavoriteInfo>? =
+        controlActions.browseFavorites(ip, port, count)
+
+    /** Start playback of a favorite. Invoke on the group coordinator. */
+    suspend fun playFavorite(
+        ip: String, port: Int = 1400, uri: String, metadata: String
+    ): Boolean =
+        controlActions.playFavorite(ip, port, uri, metadata)
+
     /** Add a speaker to a group by targeting the coordinator's UUID. */
     suspend fun addToGroup(ip: String, port: Int = 1400, coordinatorUuid: String): Boolean =
         controlActions.addToGroup(ip, port, coordinatorUuid)

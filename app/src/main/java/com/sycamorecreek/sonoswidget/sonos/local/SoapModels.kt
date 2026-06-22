@@ -163,6 +163,27 @@ data class QueueItemInfo(
     val albumArtUri: String?
 )
 
+/**
+ * A Sonos Favorite parsed from a ContentDirectory Browse of `FV:2`.
+ *
+ * To start playback the [uri] and [metadata] are passed to
+ * AVTransport:SetAVTransportURI, then Play. [metadata] is the raw DIDL-Lite
+ * describing the underlying content (station/playlist/track).
+ *
+ * @param id DIDL item id (e.g. "FV:2/12"), stable enough to identify a tap
+ * @param title Human-readable favorite name
+ * @param uri CurrentURI for SetAVTransportURI
+ * @param metadata CurrentURIMetaData (unescaped DIDL-Lite) for SetAVTransportURI
+ * @param albumArtUri Optional album art URI (may be relative to the speaker)
+ */
+data class FavoriteInfo(
+    val id: String,
+    val title: String,
+    val uri: String,
+    val metadata: String,
+    val albumArtUri: String?
+)
+
 // ──────────────────────────────────────────────
 // Utility: time parsing
 // ──────────────────────────────────────────────

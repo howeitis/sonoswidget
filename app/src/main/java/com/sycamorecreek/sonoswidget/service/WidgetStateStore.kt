@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.updateAppWidgetState
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.Favorite
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
@@ -84,6 +85,9 @@ object WidgetStateStore {
             put("queue", JSONArray().apply {
                 state.queue.forEach { put(serializeQueueItem(it)) }
             })
+            put("favorites", JSONArray().apply {
+                state.favorites.forEach { put(serializeFavorite(it)) }
+            })
             put("currentSource", state.currentSource)
             put("connectionMode", state.connectionMode.name)
             put("shuffleEnabled", state.shuffleEnabled)
@@ -115,6 +119,7 @@ object WidgetStateStore {
                 volume = obj.optInt("volume", 50),
                 zones = deserializeZoneList(obj.optJSONArray("zones")),
                 queue = deserializeQueueList(obj.optJSONArray("queue")),
+                favorites = deserializeFavoriteList(obj.optJSONArray("favorites")),
                 currentSource = obj.optString("currentSource", ""),
                 connectionMode = try {
                     ConnectionMode.valueOf(obj.optString("connectionMode", "DISCONNECTED"))
@@ -216,6 +221,28 @@ object WidgetStateStore {
     private fun deserializeStringSet(arr: JSONArray?): Set<String> {
         if (arr == null) return emptySet()
         return (0 until arr.length()).mapNotNull { i -> arr.optString(i, null) }.toSet()
+    }
+
+    private fun serializeFavorite(fav: Favorite): JSONObject = JSONObject().apply {
+        put("id", fav.id)
+        put("title", fav.title)
+        put("artUrl", fav.artUrl ?: JSONObject.NULL)
+    }
+
+    private fun deserializeFavorite(obj: JSONObject?): Favorite {
+        if (obj == null) return Favorite()
+        return Favorite(
+            id = obj.optString("id", ""),
+            title = obj.optString("title", ""),
+            artUrl = if (obj.isNull("artUrl")) null else obj.optString("artUrl")
+        )
+    }
+
+    private fun deserializeFavoriteList(arr: JSONArray?): List<Favorite> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).map { i ->
+            deserializeFavorite(arr.optJSONObject(i))
+        }
     }
 
     private fun serializeColorPalette(palette: WidgetColorPalette): JSONObject =

@@ -32,6 +32,12 @@ data class QueueItem(
     val position: Int = 0
 )
 
+data class Favorite(
+    val id: String = "",
+    val title: String = "",
+    val artUrl: String? = null
+)
+
 enum class ConnectionMode {
     LOCAL_SSDP, LOCAL_MDNS, LOCAL_MANUAL_IP, CLOUD, DISCONNECTED
 }
@@ -63,6 +69,7 @@ data class SonosWidgetState(
     val volume: Int = 50,
     val zones: List<Zone> = emptyList(),
     val queue: List<QueueItem> = emptyList(),
+    val favorites: List<Favorite> = emptyList(),
     val currentSource: String = "",
     val connectionMode: ConnectionMode = ConnectionMode.DISCONNECTED,
     val volumeMuted: Boolean = false,

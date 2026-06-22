@@ -441,6 +441,36 @@ class JumpToQueueItemAction : ActionCallback {
 }
 
 // ──────────────────────────────────────────────
+// Favorites
+// ──────────────────────────────────────────────
+
+/** Parameter key for passing a favorite's DIDL id to [PlayFavoriteAction]. */
+val FAVORITE_ID_KEY = ActionParameters.Key<String>("favorite_id")
+
+/**
+ * Starts playback of a Sonos Favorite identified by [FAVORITE_ID_KEY].
+ *
+ * Not debounced — this starts new content rather than nudging transport state.
+ */
+class PlayFavoriteAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        val favoriteId = parameters[FAVORITE_ID_KEY]
+        if (favoriteId == null) {
+            Log.w(TAG, "PlayFavoriteAction: missing favorite_id parameter")
+            return
+        }
+        Log.d(TAG, "PlayFavoriteAction triggered for $favoriteId")
+        ensureServiceRunning(context)
+        HapticHelper.playConfirm(context)
+        SonosRepository.getInstance(context).playFavorite(favoriteId)
+    }
+}
+
+// ──────────────────────────────────────────────
 // Deep link
 // ──────────────────────────────────────────────
 

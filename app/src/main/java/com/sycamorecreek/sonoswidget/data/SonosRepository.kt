@@ -12,12 +12,14 @@ import com.sycamorecreek.sonoswidget.sonos.cloud.CloudSonosController
 import com.sycamorecreek.sonoswidget.sonos.cloud.SonosOAuthManager
 import com.sycamorecreek.sonoswidget.sonos.cloud.TokenStore
 import com.sycamorecreek.sonoswidget.sonos.local.DiscoveredSpeaker
+import com.sycamorecreek.sonoswidget.sonos.local.FavoriteInfo
 import com.sycamorecreek.sonoswidget.sonos.local.LocalSonosController
 import com.sycamorecreek.sonoswidget.sonos.local.QueueItemInfo
 import com.sycamorecreek.sonoswidget.sonos.local.TransportSettings
 import com.sycamorecreek.sonoswidget.sonos.local.ZoneGroup
 import com.sycamorecreek.sonoswidget.sonos.local.ZoneGroupMember
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.Favorite
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
@@ -63,6 +65,8 @@ class SonosRepository private constructor(
         // Play mode and current-source URI change rarely; no need to refetch every
         // 2-second poll. Throttle these auxiliary queries to limit SOAP traffic/battery.
         private const val METADATA_REFRESH_INTERVAL_MS = 15_000L
+        // Favorites change rarely; refresh them only every few minutes.
+        private const val FAVORITES_REFRESH_INTERVAL_MS = 300_000L
         private const val CONNECTION_CACHE_MS = 30_000L
         private const val COMMAND_TIMEOUT_MS = 3_000L
         private const val RATE_LIMIT_BACKOFF_MS = 30_000L
@@ -140,6 +144,8 @@ class SonosRepository private constructor(
     private var cachedMuted: Boolean = false
     private var lastMuteMs: Long = 0L
     private var muteDirty: Boolean = false
+    private var cachedFavorites: List<FavoriteInfo>? = null
+    private var lastFavoritesMs: Long = 0L
 
     // Palette extraction is expensive; only recompute when the art URL changes.
     private var lastPaletteArtUrl: String? = null
@@ -499,6 +505,17 @@ class SonosRepository private constructor(
         // already returned by pollPlaybackState.
         val groupVolume = if (grouped) controller.getGroupVolume(ip, port)?.volume else null
 
+        // Sonos Favorites — browsed on a slow cadence (rarely change).
+        if (cachedFavorites == null || now - lastFavoritesMs > FAVORITES_REFRESH_INTERVAL_MS) {
+            controller.browseFavorites(ip, port)?.let {
+                cachedFavorites = it
+                lastFavoritesMs = now
+            }
+        }
+        val favorites = cachedFavorites?.map {
+            Favorite(id = it.id, title = it.title, artUrl = it.albumArtUri)
+        } ?: emptyList()
+
         val queueItems = mapQueueItems(cachedQueue, currentTrackNum)
 
         // Detect firmware update: Sonos returns "TRANSITIONING" for extended periods
@@ -517,6 +534,7 @@ class SonosRepository private constructor(
             connectionMode = activeConnectionMode
         ).copy(
             queue = queueItems,
+            favorites = favorites,
             currentSource = currentSource,
             volumeMuted = cachedMuted,
             isUpdating = isFirmwareUpdating,
@@ -966,6 +984,21 @@ class SonosRepository private constructor(
 
     suspend fun playQueueItem(trackNr: Int): Boolean = executeLocalAndPoll { ip, port ->
         controller.seekToTrack(ip, port, trackNr)
+    }
+
+    /**
+     * Starts playback of a cached Sonos Favorite by its DIDL id. Routed through
+     * the active coordinator. Favorites are local-only (no cloud equivalent).
+     */
+    suspend fun playFavorite(favoriteId: String): Boolean {
+        val fav = cachedFavorites?.find { it.id == favoriteId }
+        if (fav == null) {
+            Log.w(TAG, "Favorite '$favoriteId' not found in cache")
+            return false
+        }
+        return executeLocalAndPoll { ip, port ->
+            controller.playFavorite(ip, port, fav.uri, fav.metadata)
+        }
     }
 
     // ──────────────────────────────────────────────

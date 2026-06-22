@@ -486,6 +486,116 @@ class SonosControlActions(
     }
 
     // ──────────────────────────────────────────────
+    // ContentDirectory — Sonos Favorites (FV:2)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Browses the user's Sonos Favorites (ContentDirectory object `FV:2`).
+     * Returns up to [count] favorites parsed from the DIDL-Lite response, or
+     * null on failure.
+     */
+    suspend fun browseFavorites(
+        ip: String,
+        port: Int = 1400,
+        count: Int = 50
+    ): List<FavoriteInfo>? {
+        val xml = soapClient.invoke(
+            ip, port,
+            SonosSoapClient.Service.CONTENT_DIRECTORY,
+            "Browse",
+            listOf(
+                "ObjectID" to "FV:2",
+                "BrowseFlag" to "BrowseDirectChildren",
+                "Filter" to "*",
+                "StartingIndex" to "0",
+                "RequestedCount" to count.toString(),
+                "SortCriteria" to ""
+            )
+        ) ?: return null
+
+        return try {
+            val resultRaw = extractXmlValueGreedy(xml, "Result")
+            if (resultRaw.isNullOrBlank()) {
+                Log.d(TAG, "Favorites browse returned empty Result")
+                return emptyList()
+            }
+            parseFavoritesDidl(decodeXmlEntities(resultRaw))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse favorites browse response", e)
+            null
+        }
+    }
+
+    /**
+     * Starts playback of a favorite by setting the transport URI to the
+     * favorite's content and pressing play. Invoke on the group coordinator.
+     */
+    suspend fun playFavorite(
+        ip: String,
+        port: Int = 1400,
+        uri: String,
+        metadata: String
+    ): Boolean {
+        val set = invokeSimple(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT, "SetAVTransportURI",
+            listOf(
+                "InstanceID" to INSTANCE_ID,
+                "CurrentURI" to uri,
+                "CurrentURIMetaData" to metadata
+            )
+        )
+        if (!set) return false
+        return invokeSimple(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT, "Play",
+            listOf("InstanceID" to INSTANCE_ID, "Speed" to "1")
+        )
+    }
+
+    /**
+     * Parses DIDL-Lite from an `FV:2` browse into [FavoriteInfo] items. Each
+     * `<item>` carries a `<res>` (play URI) and an entity-encoded `<r:resMD>`
+     * (the metadata to hand to SetAVTransportURI).
+     */
+    private fun parseFavoritesDidl(didl: String): List<FavoriteInfo> {
+        val favorites = mutableListOf<FavoriteInfo>()
+        val itemPattern = Regex(
+            """<item\s([^>]*)>(.*?)</item>""",
+            RegexOption.DOT_MATCHES_ALL
+        )
+        val resMdPattern = Regex(
+            """<r:resMD[^>]*>(.*?)</r:resMD>""",
+            RegexOption.DOT_MATCHES_ALL
+        )
+
+        for (match in itemPattern.findAll(didl)) {
+            val attrs = match.groupValues[1]
+            val body = match.groupValues[2]
+
+            val id = extractXmlAttribute(attrs, "id") ?: continue
+            val title = extractDidlValue(body, "dc:title") ?: "Favorite"
+            val uri = extractDidlValue(body, "res") ?: continue
+            val metadata = resMdPattern.find(body)?.groupValues?.get(1)
+                ?.let { decodeXmlEntities(it) } ?: ""
+            val albumArtUri = extractDidlValue(body, "upnp:albumArtURI")
+
+            favorites.add(
+                FavoriteInfo(
+                    id = id,
+                    title = title,
+                    uri = uri,
+                    metadata = metadata,
+                    albumArtUri = albumArtUri
+                )
+            )
+        }
+
+        Log.d(TAG, "Parsed ${favorites.size} favorite(s)")
+        return favorites
+    }
+
+    // ──────────────────────────────────────────────
     // ZoneGroupTopology — Zone & Group management
     // ──────────────────────────────────────────────
 
