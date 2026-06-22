@@ -740,6 +740,10 @@ class SonosControlActions(
 
             for (memberMatch in memberPattern.findAll(groupBody)) {
                 val memberAttrs = memberMatch.groupValues[1]
+                val invisibleStr = extractXmlAttribute(memberAttrs, "Invisible")
+                val isInvisible = invisibleStr == "1" || invisibleStr?.lowercase() == "true"
+                if (isInvisible) continue
+
                 val uuid = extractXmlAttribute(memberAttrs, "UUID") ?: continue
                 val zoneName = extractXmlAttribute(memberAttrs, "ZoneName") ?: "Unknown"
                 val location = extractXmlAttribute(memberAttrs, "Location") ?: ""

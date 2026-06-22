@@ -131,6 +131,7 @@ class SonosRepository private constructor(
 
     private var cachedZoneGroups: List<ZoneGroup>? = null
     private var lastZoneRefreshMs: Long = 0L
+    private var forceZoneRefreshUntilMs: Long = 0L
 
     private var cachedQueue: List<QueueItemInfo>? = null
     private var lastQueueTrackNum: Int = -1
@@ -454,9 +455,14 @@ class SonosRepository private constructor(
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastZoneRefreshMs > ZONE_REFRESH_INTERVAL_MS || cachedZoneGroups == null) {
-            cachedZoneGroups = controller.getZoneGroupState(ip, port)
-            lastZoneRefreshMs = now
+        if (now - lastZoneRefreshMs > ZONE_REFRESH_INTERVAL_MS || cachedZoneGroups == null || now < forceZoneRefreshUntilMs) {
+            val freshGroups = controller.getZoneGroupState(ip, port)
+            if (freshGroups != null) {
+                cachedZoneGroups = freshGroups
+                if (now >= forceZoneRefreshUntilMs) {
+                    lastZoneRefreshMs = now
+                }
+            }
         }
 
         val currentTrackNum = positionInfo?.trackNum ?: 0
@@ -1046,6 +1052,7 @@ class SonosRepository private constructor(
         if (success) {
             kotlinx.coroutines.delay(500)
             val ip = activeSpeakerIp ?: return true
+            forceZoneRefreshUntilMs = System.currentTimeMillis() + 8000L
             cachedZoneGroups = controller.getZoneGroupState(ip, activeSpeakerPort)
             lastZoneRefreshMs = System.currentTimeMillis()
             pollAndUpdate()
@@ -1101,6 +1108,7 @@ class SonosRepository private constructor(
 
         kotlinx.coroutines.delay(500)
         val ip = activeSpeakerIp ?: return allSucceeded
+        forceZoneRefreshUntilMs = System.currentTimeMillis() + 8000L
         cachedZoneGroups = controller.getZoneGroupState(ip, activeSpeakerPort)
         lastZoneRefreshMs = System.currentTimeMillis()
         pollAndUpdate()
