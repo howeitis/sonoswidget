@@ -61,7 +61,10 @@ class PlaybackService : Service() {
 
         // Polling intervals (milliseconds)
         private const val POLL_PLAYING_MS = 2_000L
-        private const val POLL_PAUSED_MS = 10_000L
+        // Paused: poll fairly briskly so play/track changes made from the Sonos
+        // app or another remote show up on the widget within a few seconds.
+        // (Cheaper than full UPnP eventing for a single-widget setup.)
+        private const val POLL_PAUSED_MS = 4_000L
         private const val POLL_STOPPED_MS = 15_000L
 
         // Disconnected exponential backoff

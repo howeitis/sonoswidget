@@ -56,6 +56,10 @@ class SonosRepository private constructor(
     companion object {
         private const val TAG = "SonosRepository"
         private const val ZONE_REFRESH_INTERVAL_MS = 60_000L
+        // Room the single widget should land on at cold start when the user hasn't
+        // explicitly chosen a default zone in the companion app. Matched by room
+        // name (case-insensitive) against the zone group topology.
+        private const val DEFAULT_ZONE_NAME = "Living Room"
         // Play mode and current-source URI change rarely; no need to refetch every
         // 2-second poll. Throttle these auxiliary queries to limit SOAP traffic/battery.
         private const val METADATA_REFRESH_INTERVAL_MS = 15_000L
@@ -248,8 +252,10 @@ class SonosRepository private constructor(
             cachedZoneGroups = zoneGroups
             lastZoneRefreshMs = System.currentTimeMillis()
 
-            // Find the best coordinator: prefer one that is currently PLAYING
-            val bestCoordinator = findBestCoordinator(zoneGroups)
+            // Prefer the user's default room (or the built-in Living Room
+            // fallback) at cold start; otherwise pick whatever's playing.
+            val bestCoordinator = resolvePreferredCoordinator(zoneGroups)
+                ?: findBestCoordinator(zoneGroups)
             if (bestCoordinator != null) {
                 activeSpeakerIp = bestCoordinator.ip
                 activeSpeakerPort = bestCoordinator.port
@@ -1159,6 +1165,41 @@ class SonosRepository private constructor(
         val member: ZoneGroupMember,
         val transportState: String?
     )
+
+    /**
+     * Resolves the user's preferred room — the default zone configured in the
+     * companion app, or the [DEFAULT_ZONE_NAME] fallback — to a reachable group
+     * coordinator. Used only at cold start so the widget opens on the usual room
+     * instead of "whatever last played". The STOPPED re-scan still follows
+     * playback via [findBestCoordinator].
+     *
+     * Returns null if the preferred room isn't present in the topology or its
+     * coordinator doesn't respond, in which case the caller falls back.
+     */
+    private suspend fun resolvePreferredCoordinator(
+        zoneGroups: List<ZoneGroup>
+    ): ZoneGroupMember? {
+        val default = preferences.getDefaultZone()
+        val preferredId = default?.id
+        val preferredName = (default?.name ?: DEFAULT_ZONE_NAME).trim()
+
+        val group = zoneGroups.firstOrNull { g ->
+            g.members.any { m ->
+                (preferredId != null && m.uuid == preferredId) ||
+                    m.zoneName.equals(preferredName, ignoreCase = true)
+            }
+        } ?: return null
+
+        val coordinator = group.members.find { it.isCoordinator } ?: return null
+        // Only commit to it if it's actually reachable right now.
+        val info = controller.getTransportInfo(coordinator.ip, coordinator.port)
+        if (info == null) {
+            Log.d(TAG, "Preferred zone '$preferredName' coordinator unreachable, falling back")
+            return null
+        }
+        Log.d(TAG, "Preferred zone '$preferredName' → coordinator ${coordinator.zoneName} @ ${coordinator.ip}")
+        return coordinator
+    }
 
     private suspend fun findBestCoordinator(
         zoneGroups: List<ZoneGroup>
