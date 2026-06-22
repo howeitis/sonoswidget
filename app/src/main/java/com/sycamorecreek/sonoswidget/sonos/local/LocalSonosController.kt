@@ -189,6 +189,22 @@ class LocalSonosController(
     suspend fun setMute(ip: String, port: Int = 1400, muted: Boolean): Boolean =
         controlActions.setMute(ip, port, muted)
 
+    /** Get the whole-group volume (0–100). Invoke on the group coordinator. */
+    suspend fun getGroupVolume(ip: String, port: Int = 1400): VolumeInfo? =
+        controlActions.getGroupVolume(ip, port)
+
+    /** Set the whole-group volume (0–100). Invoke on the group coordinator. */
+    suspend fun setGroupVolume(ip: String, port: Int = 1400, volume: Int): Boolean =
+        controlActions.setGroupVolume(ip, port, volume)
+
+    /** Get the whole-group mute state. Invoke on the group coordinator. */
+    suspend fun getGroupMute(ip: String, port: Int = 1400): MuteInfo? =
+        controlActions.getGroupMute(ip, port)
+
+    /** Set the whole-group mute state. Invoke on the group coordinator. */
+    suspend fun setGroupMute(ip: String, port: Int = 1400, muted: Boolean): Boolean =
+        controlActions.setGroupMute(ip, port, muted)
+
     /** Get the full zone group topology (all speakers and groupings). */
     suspend fun getZoneGroupState(ip: String, port: Int = 1400): List<ZoneGroup>? =
         controlActions.getZoneGroupState(ip, port)
@@ -202,6 +218,16 @@ class LocalSonosController(
         ip: String, port: Int = 1400, startIndex: Int = 0, count: Int = 20
     ): List<QueueItemInfo>? =
         controlActions.browseQueue(ip, port, startIndex, count)
+
+    /** Browse the user's Sonos Favorites (FV:2). */
+    suspend fun browseFavorites(ip: String, port: Int = 1400, count: Int = 50): List<FavoriteInfo>? =
+        controlActions.browseFavorites(ip, port, count)
+
+    /** Start playback of a favorite. Invoke on the group coordinator. */
+    suspend fun playFavorite(
+        ip: String, port: Int = 1400, uri: String, metadata: String
+    ): Boolean =
+        controlActions.playFavorite(ip, port, uri, metadata)
 
     /** Add a speaker to a group by targeting the coordinator's UUID. */
     suspend fun addToGroup(ip: String, port: Int = 1400, coordinatorUuid: String): Boolean =

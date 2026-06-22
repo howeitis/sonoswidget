@@ -111,15 +111,36 @@ fun ExpandedLayout(
 
                 if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
                     Spacer(modifier = GlanceModifier.height(14.dp))
-                    StaticProgressBar(
-                        elapsedMs = state.currentTrack.elapsedMs,
-                        durationMs = state.currentTrack.durationMs,
-                        accentColor = accentColor,
-                        trackColor = chipBg,
-                        barHeight = 4.dp,
-                        showTimeLabels = true,
-                        timeLabelColor = textSecondary
-                    )
+                    Row(
+                        modifier = GlanceModifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SeekButton(
+                            label = "-15",
+                            desc = "Rewind 15 seconds",
+                            callback = actionRunCallback<SeekBackAction>(),
+                            textColor = textSecondary
+                        )
+                        Spacer(modifier = GlanceModifier.width(8.dp))
+                        Box(modifier = GlanceModifier.defaultWeight()) {
+                            StaticProgressBar(
+                                elapsedMs = state.currentTrack.elapsedMs,
+                                durationMs = state.currentTrack.durationMs,
+                                accentColor = accentColor,
+                                trackColor = chipBg,
+                                barHeight = 4.dp,
+                                showTimeLabels = true,
+                                timeLabelColor = textSecondary
+                            )
+                        }
+                        Spacer(modifier = GlanceModifier.width(8.dp))
+                        SeekButton(
+                            label = "+15",
+                            desc = "Forward 15 seconds",
+                            callback = actionRunCallback<SeekForwardAction>(),
+                            textColor = textSecondary
+                        )
+                    }
                 }
             }
 
@@ -161,6 +182,17 @@ fun ExpandedLayout(
                     disabledColor = disabledColor,
                     sectionLabelColor = sectionLabelColor
                 )
+
+                if (state.favorites.isNotEmpty()) {
+                    Spacer(modifier = GlanceModifier.height(10.dp))
+                    FavoritesSection(
+                        state = state,
+                        controlsDisabled = controlsDisabled,
+                        textPrimary = textPrimary,
+                        sectionLabelColor = sectionLabelColor,
+                        chipBg = chipBg
+                    )
+                }
 
                 Spacer(modifier = GlanceModifier.height(10.dp))
 
@@ -438,6 +470,33 @@ private fun TransportControlsBar(
 
 @GlanceComposable
 @androidx.compose.runtime.Composable
+private fun SeekButton(
+    label: String,
+    desc: String,
+    callback: androidx.glance.action.Action,
+    textColor: Color
+) {
+    Box(
+        modifier = GlanceModifier
+            .width(44.dp)
+            .height(36.dp)
+            .semantics { contentDescription = desc }
+            .clickable(callback),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = TextStyle(
+                color = ColorProvider(textColor),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+        )
+    }
+}
+
+@GlanceComposable
+@androidx.compose.runtime.Composable
 private fun VolumeSection(
     state: SonosWidgetState,
     controlsDisabled: Boolean,
@@ -515,6 +574,33 @@ private fun VolumeSection(
                     ),
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
+                )
+            )
+        }
+
+        Spacer(modifier = GlanceModifier.width(8.dp))
+
+        // Mute toggle (48dp touch target)
+        val muteLabel = if (state.volumeMuted) "Unmute" else "Mute"
+        Box(
+            modifier = GlanceModifier
+                .size(48.dp)
+                .cornerRadius(8.dp)
+                .background(if (state.volumeMuted) accentColor else chipBg)
+                .semantics { contentDescription = muteLabel }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<ToggleMuteAction>())
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (state.volumeMuted) "🔇" else "🔊",
+                style = TextStyle(
+                    color = ColorProvider(
+                        if (controlsDisabled) disabledVol else textPrimary
+                    ),
+                    fontSize = 16.sp
                 )
             )
         }
@@ -743,6 +829,68 @@ private fun GroupAllChip(
 // ──────────────────────────────────────────────
 // Scrollable queue list (Task 2.3)
 // ──────────────────────────────────────────────
+
+@GlanceComposable
+@androidx.compose.runtime.Composable
+private fun FavoritesSection(
+    state: SonosWidgetState,
+    controlsDisabled: Boolean,
+    textPrimary: Color,
+    sectionLabelColor: Color,
+    chipBg: Color
+) {
+    if (state.favorites.isEmpty()) return
+
+    Column(modifier = GlanceModifier.fillMaxWidth()) {
+        Text(
+            text = "Favorites",
+            style = TextStyle(
+                color = ColorProvider(sectionLabelColor),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+            )
+        )
+
+        Spacer(modifier = GlanceModifier.height(6.dp))
+
+        // Non-scrolling row (Glance has no LazyRow): show the first few
+        // favorites as equal-width tappable chips.
+        Row(modifier = GlanceModifier.fillMaxWidth()) {
+            state.favorites.take(3).forEachIndexed { index, fav ->
+                if (index > 0) Spacer(modifier = GlanceModifier.width(8.dp))
+                Box(
+                    modifier = GlanceModifier
+                        .defaultWeight()
+                        .cornerRadius(8.dp)
+                        .background(chipBg)
+                        .padding(horizontal = 10.dp, vertical = 10.dp)
+                        .semantics { contentDescription = "Play ${fav.title}" }
+                        .let { mod ->
+                            if (controlsDisabled) mod
+                            else mod.clickable(
+                                actionRunCallback<PlayFavoriteAction>(
+                                    actionParametersOf(FAVORITE_ID_KEY to fav.id)
+                                )
+                            )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = fav.title,
+                        style = TextStyle(
+                            color = ColorProvider(
+                                if (controlsDisabled) Color(0xFF555570) else textPrimary
+                            ),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
 
 @GlanceComposable
 @androidx.compose.runtime.Composable
