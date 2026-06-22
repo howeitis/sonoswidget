@@ -134,6 +134,12 @@ class SonosRepository private constructor(
     private var lastTransportSettingsMs: Long = 0L
     private var lastMediaInfoMs: Long = 0L
     private var cachedSource: String = ""
+    // Mute changes rarely, so it's polled on the slow metadata cadence rather
+    // than every cycle. [muteDirty] forces a refetch on the poll that follows a
+    // SetMute command so the widget reflects the toggle immediately.
+    private var cachedMuted: Boolean = false
+    private var lastMuteMs: Long = 0L
+    private var muteDirty: Boolean = false
 
     // Palette extraction is expensive; only recompute when the art URL changes.
     private var lastPaletteArtUrl: String? = null
@@ -474,6 +480,13 @@ class SonosRepository private constructor(
         }
         val currentSource = cachedSource
 
+        // Mute state — slow cadence, but refetched right after a toggle.
+        if (muteDirty || now - lastMuteMs > METADATA_REFRESH_INTERVAL_MS) {
+            cachedMuted = controller.getMute(ip, port)?.muted ?: cachedMuted
+            lastMuteMs = now
+            muteDirty = false
+        }
+
         val queueItems = mapQueueItems(cachedQueue, currentTrackNum)
 
         // Detect firmware update: Sonos returns "TRANSITIONING" for extended periods
@@ -493,6 +506,7 @@ class SonosRepository private constructor(
         ).copy(
             queue = queueItems,
             currentSource = currentSource,
+            volumeMuted = cachedMuted,
             isUpdating = isFirmwareUpdating,
             isOffline = false,
             isReconnecting = false,
@@ -830,10 +844,15 @@ class SonosRepository private constructor(
         cloud = { cloudController.setVolume(volume) }
     )
 
-    suspend fun setMute(muted: Boolean): Boolean = routeCommand(
-        local = { ip, port -> controller.setMute(ip, port, muted) },
-        cloud = { false }
-    )
+    suspend fun setMute(muted: Boolean): Boolean {
+        // Optimistic + force a mute refetch on the re-poll that routeCommand runs.
+        cachedMuted = muted
+        muteDirty = true
+        return routeCommand(
+            local = { ip, port -> controller.setMute(ip, port, muted) },
+            cloud = { false }
+        )
+    }
 
     suspend fun switchZone(zoneId: String): Boolean {
         if (activeConnectionMode == ConnectionMode.CLOUD) {

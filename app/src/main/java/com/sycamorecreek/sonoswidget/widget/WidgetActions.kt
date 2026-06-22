@@ -228,6 +228,75 @@ class VolumeDownAction : ActionCallback {
     }
 }
 
+/**
+ * Toggles mute on/off for the active speaker.
+ *
+ * Not debounced — mute is a direct toggle; the repository optimistically
+ * flips the cached state and re-polls.
+ */
+class ToggleMuteAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        Log.d(TAG, "ToggleMuteAction triggered")
+        ensureServiceRunning(context)
+        HapticHelper.playClick(context)
+        val repo = SonosRepository.getInstance(context)
+        repo.setMute(!repo.widgetState.value.volumeMuted)
+    }
+}
+
+// ──────────────────────────────────────────────
+// Seek (scrub within current track)
+// ──────────────────────────────────────────────
+
+/** Seconds to jump when the user taps a seek control. */
+private const val SEEK_STEP_MS = 15_000L
+
+/**
+ * Seeks backward [SEEK_STEP_MS] within the current track, clamped to 0.
+ * No-op when nothing is playing or the duration is unknown.
+ */
+class SeekBackAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        Log.d(TAG, "SeekBackAction triggered")
+        ensureServiceRunning(context)
+        HapticHelper.playClick(context)
+        val repo = SonosRepository.getInstance(context)
+        val track = repo.widgetState.value.currentTrack
+        if (track.durationMs <= 0L) return
+        val target = (track.elapsedMs - SEEK_STEP_MS).coerceAtLeast(0L)
+        repo.seek(target)
+    }
+}
+
+/**
+ * Seeks forward [SEEK_STEP_MS] within the current track, clamped to the track
+ * duration. No-op when nothing is playing or the duration is unknown.
+ */
+class SeekForwardAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        Log.d(TAG, "SeekForwardAction triggered")
+        ensureServiceRunning(context)
+        HapticHelper.playClick(context)
+        val repo = SonosRepository.getInstance(context)
+        val track = repo.widgetState.value.currentTrack
+        if (track.durationMs <= 0L) return
+        val target = (track.elapsedMs + SEEK_STEP_MS).coerceAtMost(track.durationMs)
+        repo.seek(target)
+    }
+}
+
 // ──────────────────────────────────────────────
 // Zone selection
 // ──────────────────────────────────────────────

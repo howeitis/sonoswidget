@@ -89,6 +89,7 @@ object WidgetStateStore {
             put("shuffleEnabled", state.shuffleEnabled)
             put("repeatMode", state.repeatMode.name)
             put("colorPalette", serializeColorPalette(state.colorPalette))
+            put("volumeMuted", state.volumeMuted)
             put("isReconnecting", state.isReconnecting)
             put("isRateLimited", state.isRateLimited)
             put("isOffline", state.isOffline)
@@ -127,6 +128,7 @@ object WidgetStateStore {
                     RepeatMode.NONE
                 },
                 colorPalette = deserializeColorPalette(obj.optJSONObject("colorPalette")),
+                volumeMuted = obj.optBoolean("volumeMuted", false),
                 isReconnecting = obj.optBoolean("isReconnecting", false),
                 isRateLimited = obj.optBoolean("isRateLimited", false),
                 isOffline = obj.optBoolean("isOffline", false),

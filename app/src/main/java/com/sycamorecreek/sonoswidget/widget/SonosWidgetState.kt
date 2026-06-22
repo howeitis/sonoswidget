@@ -32,12 +32,6 @@ data class QueueItem(
     val position: Int = 0
 )
 
-data class MusicSource(
-    val id: String = "",
-    val name: String = "",
-    val iconResId: Int = 0
-)
-
 enum class ConnectionMode {
     LOCAL_SSDP, LOCAL_MDNS, LOCAL_MANUAL_IP, CLOUD, DISCONNECTED
 }
@@ -69,9 +63,9 @@ data class SonosWidgetState(
     val volume: Int = 50,
     val zones: List<Zone> = emptyList(),
     val queue: List<QueueItem> = emptyList(),
-    val availableSources: List<MusicSource> = emptyList(),
     val currentSource: String = "",
     val connectionMode: ConnectionMode = ConnectionMode.DISCONNECTED,
+    val volumeMuted: Boolean = false,
     val shuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.NONE,
     val colorPalette: WidgetColorPalette = WidgetColorPalette(),

@@ -111,15 +111,36 @@ fun ExpandedLayout(
 
                 if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
                     Spacer(modifier = GlanceModifier.height(14.dp))
-                    StaticProgressBar(
-                        elapsedMs = state.currentTrack.elapsedMs,
-                        durationMs = state.currentTrack.durationMs,
-                        accentColor = accentColor,
-                        trackColor = chipBg,
-                        barHeight = 4.dp,
-                        showTimeLabels = true,
-                        timeLabelColor = textSecondary
-                    )
+                    Row(
+                        modifier = GlanceModifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SeekButton(
+                            label = "-15",
+                            contentDescription = "Rewind 15 seconds",
+                            callback = actionRunCallback<SeekBackAction>(),
+                            textColor = textSecondary
+                        )
+                        Spacer(modifier = GlanceModifier.width(8.dp))
+                        Box(modifier = GlanceModifier.defaultWeight()) {
+                            StaticProgressBar(
+                                elapsedMs = state.currentTrack.elapsedMs,
+                                durationMs = state.currentTrack.durationMs,
+                                accentColor = accentColor,
+                                trackColor = chipBg,
+                                barHeight = 4.dp,
+                                showTimeLabels = true,
+                                timeLabelColor = textSecondary
+                            )
+                        }
+                        Spacer(modifier = GlanceModifier.width(8.dp))
+                        SeekButton(
+                            label = "+15",
+                            contentDescription = "Forward 15 seconds",
+                            callback = actionRunCallback<SeekForwardAction>(),
+                            textColor = textSecondary
+                        )
+                    }
                 }
             }
 
@@ -438,6 +459,33 @@ private fun TransportControlsBar(
 
 @GlanceComposable
 @androidx.compose.runtime.Composable
+private fun SeekButton(
+    label: String,
+    desc: String,
+    callback: androidx.glance.action.Action,
+    textColor: Color
+) {
+    Box(
+        modifier = GlanceModifier
+            .width(44.dp)
+            .height(36.dp)
+            .semantics { contentDescription = desc }
+            .clickable(callback),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = TextStyle(
+                color = ColorProvider(textColor),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+        )
+    }
+}
+
+@GlanceComposable
+@androidx.compose.runtime.Composable
 private fun VolumeSection(
     state: SonosWidgetState,
     controlsDisabled: Boolean,
@@ -515,6 +563,33 @@ private fun VolumeSection(
                     ),
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
+                )
+            )
+        }
+
+        Spacer(modifier = GlanceModifier.width(8.dp))
+
+        // Mute toggle (48dp touch target)
+        val muteLabel = if (state.volumeMuted) "Unmute" else "Mute"
+        Box(
+            modifier = GlanceModifier
+                .size(48.dp)
+                .cornerRadius(8.dp)
+                .background(if (state.volumeMuted) accentColor else chipBg)
+                .semantics { contentDescription = muteLabel }
+                .let { mod ->
+                    if (controlsDisabled) mod
+                    else mod.clickable(actionRunCallback<ToggleMuteAction>())
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (state.volumeMuted) "🔇" else "🔊",
+                style = TextStyle(
+                    color = ColorProvider(
+                        if (controlsDisabled) disabledVol else textPrimary
+                    ),
+                    fontSize = 16.sp
                 )
             )
         }
