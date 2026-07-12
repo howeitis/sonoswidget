@@ -129,6 +129,7 @@ object AlbumArtLoader {
         if (file.exists()) {
             file.delete()
         }
+        WidgetBackgroundRenderer.clear(context)
     }
 
     /**
@@ -169,6 +170,8 @@ object AlbumArtLoader {
         if (file.exists()) {
             file.delete()
         }
+
+        WidgetBackgroundRenderer.clear(context)
 
         Log.d(TAG, "All disk caches cleared")
     }

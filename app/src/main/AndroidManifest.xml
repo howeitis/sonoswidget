@@ -27,6 +27,14 @@
     <!-- Haptic feedback for widget transport controls (HapticHelper) -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Package visibility (Android 11+): without these declarations,
+         getLaunchIntentForPackage() returns null for the Sonos app even when
+         installed, and tapping album art falls through to the Play Store. -->
+    <queries>
+        <package android:name="com.sonos.acr2" />
+        <package android:name="com.sonos.acr" />
+    </queries>
+
     <application
         android:name=".app.SonosApplication"
         android:allowBackup="true"

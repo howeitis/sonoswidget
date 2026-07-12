@@ -527,12 +527,67 @@ class SonosControlActions(
     }
 
     /**
-     * Starts playback of a favorite by setting the transport URI to the
-     * favorite's content and pressing play. Invoke on the group coordinator.
+     * Starts playback of a favorite. Invoke on the group coordinator.
+     *
+     * Two playback paths depending on the favorite type:
+     *  - **Containers** (playlists like Apple Music "Favorite Songs" or YT Music
+     *    "Your Likes", albums, artist radio): their URI is an
+     *    `x-rincon-cpcontainer:` reference or their DIDL class is
+     *    `object.container.*`. These cannot be set as the transport URI directly
+     *    (Sonos returns a SOAP fault → "command failed"). They must be cleared
+     *    into the queue with AddURIToQueue, then played from the queue URI.
+     *  - **Single items** (radio stations, streams, individual tracks): set the
+     *    transport URI directly and play.
+     *
+     * @param coordinatorUuid UUID of the group coordinator (e.g. "RINCON_xxx"),
+     *   needed to build the `x-rincon-queue:` URI for container playback.
      */
     suspend fun playFavorite(
         ip: String,
         port: Int = 1400,
+        uri: String,
+        metadata: String,
+        coordinatorUuid: String?
+    ): Boolean {
+        val isContainer = isContainerFavorite(uri, metadata)
+        val canQueue = !coordinatorUuid.isNullOrBlank()
+        Log.d(
+            TAG,
+            "playFavorite: uri=${uri.substringBefore(':')}:… isContainer=$isContainer " +
+                "canQueue=$canQueue coordinator=$coordinatorUuid metadataLen=${metadata.length}"
+        )
+
+        // Prefer the strategy that matches the detected type, but fall back to the
+        // other if it fails — favorite content types are hard to detect perfectly
+        // (cpcontainer vs. direct stream vs. service quirks), so we try both rather
+        // than report failure on a single mis-detection.
+        val preferQueue = isContainer && canQueue
+        val primaryOk = if (preferQueue) {
+            playContainerFromQueue(ip, port, uri, metadata, coordinatorUuid!!)
+        } else {
+            playSingleUri(ip, port, uri, metadata)
+        }
+        if (primaryOk) return true
+
+        Log.w(TAG, "Favorite primary path (queue=$preferQueue) failed — trying fallback")
+        return if (preferQueue) {
+            playSingleUri(ip, port, uri, metadata)
+        } else if (canQueue) {
+            playContainerFromQueue(ip, port, uri, metadata, coordinatorUuid!!)
+        } else {
+            false
+        }
+    }
+
+    /** True if the favorite references a container (playlist/album/station list). */
+    private fun isContainerFavorite(uri: String, metadata: String): Boolean =
+        uri.startsWith("x-rincon-cpcontainer:") ||
+            metadata.contains("object.container", ignoreCase = true)
+
+    /** Sets the transport URI to a single item and presses play. */
+    private suspend fun playSingleUri(
+        ip: String,
+        port: Int,
         uri: String,
         metadata: String
     ): Boolean {
@@ -554,6 +609,65 @@ class SonosControlActions(
     }
 
     /**
+     * Replaces the queue with a container favorite and plays it. Clears the
+     * existing queue, enqueues the container, points the transport at the queue,
+     * then plays.
+     */
+    private suspend fun playContainerFromQueue(
+        ip: String,
+        port: Int,
+        uri: String,
+        metadata: String,
+        coordinatorUuid: String
+    ): Boolean {
+        // Clearing the queue is best-effort; an empty queue still returns success.
+        // Use the slow profile — clearing a multi-thousand-track queue isn't instant.
+        invokeSimple(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT, "RemoveAllTracksFromQueue",
+            listOf("InstanceID" to INSTANCE_ID),
+            priority = SonosSoapClient.Priority.SLOW_COMMAND
+        )
+
+        // Enqueuing a large playlist makes the speaker pull every track from the
+        // music service — thousands of tracks can take 10-30s. Needs the long
+        // read timeout, or it false-fails with "command failed".
+        val added = invokeSimple(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT, "AddURIToQueue",
+            listOf(
+                "InstanceID" to INSTANCE_ID,
+                "EnqueuedURI" to uri,
+                "EnqueuedURIMetaData" to metadata,
+                "DesiredFirstTrackNumberEnqueued" to "0",
+                "EnqueueAsNext" to "0"
+            ),
+            priority = SonosSoapClient.Priority.SLOW_COMMAND
+        )
+        if (!added) {
+            Log.w(TAG, "AddURIToQueue failed for container favorite")
+            return false
+        }
+
+        val pointed = invokeSimple(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT, "SetAVTransportURI",
+            listOf(
+                "InstanceID" to INSTANCE_ID,
+                "CurrentURI" to "x-rincon-queue:$coordinatorUuid#0",
+                "CurrentURIMetaData" to ""
+            )
+        )
+        if (!pointed) return false
+
+        return invokeSimple(
+            ip, port,
+            SonosSoapClient.Service.AV_TRANSPORT, "Play",
+            listOf("InstanceID" to INSTANCE_ID, "Speed" to "1")
+        )
+    }
+
+    /**
      * Parses DIDL-Lite from an `FV:2` browse into [FavoriteInfo] items. Each
      * `<item>` carries a `<res>` (play URI) and an entity-encoded `<r:resMD>`
      * (the metadata to hand to SetAVTransportURI).
@@ -564,8 +678,9 @@ class SonosControlActions(
             """<item\s([^>]*)>(.*?)</item>""",
             RegexOption.DOT_MATCHES_ALL
         )
+        // Namespace-agnostic match for resMD (e.g. <r:resMD>, <resMD>, <upnp:resMD>)
         val resMdPattern = Regex(
-            """<r:resMD[^>]*>(.*?)</r:resMD>""",
+            """<[^>]*?resMD[^>]*?>(.*?)</[^>]*?resMD>""",
             RegexOption.DOT_MATCHES_ALL
         )
 
@@ -576,9 +691,33 @@ class SonosControlActions(
             val id = extractXmlAttribute(attrs, "id") ?: continue
             val title = extractDidlValue(body, "dc:title") ?: "Favorite"
             val uri = extractDidlValue(body, "res") ?: continue
-            val metadata = resMdPattern.find(body)?.groupValues?.get(1)
-                ?.let { decodeXmlEntities(it) } ?: ""
             val albumArtUri = extractDidlValue(body, "upnp:albumArtURI")
+
+            val resMdRaw = resMdPattern.find(body)?.groupValues?.get(1)
+            var metadata = resMdRaw?.let { decodeXmlEntities(it) } ?: ""
+
+            Log.d(
+                TAG,
+                "Favorite '$title' [$id]: uri=${uri.substringBefore(':')}:… " +
+                    "resMD=${if (resMdRaw != null) "present(${metadata.length})" else "MISSING→fallback"} " +
+                    "hasDesc=${metadata.contains("<desc")} " +
+                    "innerClass=${Regex("<upnp:class>([^<]*)</upnp:class>").find(metadata)?.groupValues?.get(1) ?: "?"}"
+            )
+
+            // Fallback: If metadata is blank, construct a valid DIDL-Lite metadata block for the favorite
+            if (metadata.isBlank()) {
+                val artTag = if (!albumArtUri.isNullOrBlank()) "<upnp:albumArtURI>${escapeXmlForFallback(albumArtUri)}</upnp:albumArtURI>" else ""
+                metadata = """
+                    <DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">
+                        <item id="$id" parentID="FV:2" restricted="true">
+                            <dc:title>${escapeXmlForFallback(title)}</dc:title>
+                            <upnp:class>object.item.sonos-favorite</upnp:class>
+                            <res>${escapeXmlForFallback(uri)}</res>
+                            $artTag
+                        </item>
+                    </DIDL-Lite>
+                """.trimIndent()
+            }
 
             favorites.add(
                 FavoriteInfo(
@@ -594,6 +733,13 @@ class SonosControlActions(
         Log.d(TAG, "Parsed ${favorites.size} favorite(s)")
         return favorites
     }
+
+    private fun escapeXmlForFallback(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
 
     // ──────────────────────────────────────────────
     // ZoneGroupTopology — Zone & Group management
@@ -637,15 +783,20 @@ class SonosControlActions(
     /**
      * Invokes a SOAP action that has no meaningful response body (commands like Play, Pause, etc.).
      * Returns true if the request succeeded (non-null response), false otherwise.
+     *
+     * These are all user-initiated commands, so they use the fail-fast
+     * [SonosSoapClient.Priority.CONTROL] profile — a tap that won't land should
+     * surface "tap to retry" quickly rather than hang on the patient poll timeout.
      */
     private suspend fun invokeSimple(
         ip: String,
         port: Int,
         service: SonosSoapClient.Service,
         action: String,
-        params: List<Pair<String, String>>
+        params: List<Pair<String, String>>,
+        priority: SonosSoapClient.Priority = SonosSoapClient.Priority.CONTROL
     ): Boolean {
-        val result = soapClient.invoke(ip, port, service, action, params)
+        val result = soapClient.invoke(ip, port, service, action, params, priority = priority)
         if (result == null) {
             Log.w(TAG, "$action failed for $ip:$port")
         }

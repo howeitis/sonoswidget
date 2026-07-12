@@ -4,14 +4,18 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,15 +26,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -49,7 +57,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -59,17 +72,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.sycamorecreek.sonoswidget.R
 import com.sycamorecreek.sonoswidget.data.SonosPreferences
 import com.sycamorecreek.sonoswidget.data.SonosRepository
 import com.sycamorecreek.sonoswidget.service.AlbumArtLoader
 import com.sycamorecreek.sonoswidget.service.PlaybackService
-import com.sycamorecreek.sonoswidget.service.WidgetStateStore
 import com.sycamorecreek.sonoswidget.sonos.cloud.CloudSonosController
-import com.sycamorecreek.sonoswidget.sonos.cloud.SonosCloudApi
 import com.sycamorecreek.sonoswidget.sonos.cloud.SonosOAuthManager
 import com.sycamorecreek.sonoswidget.sonos.cloud.TokenStore
+import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.PlaybackState
+import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
 import com.sycamorecreek.sonoswidget.widget.Zone
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -81,22 +102,27 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * Companion app activity for Sonos OAuth login and settings.
+ * Companion app for the Sonos widget.
  *
- * Provides:
- *   - Sonos OAuth 2.0 login/logout
- *   - Manual speaker IP entry with connection test
- *   - Default zone selection from discovered speakers
- *   - Preferred music service picker
- *   - Cache management (size display + clear)
- *   - Widget refresh button
+ * Redesigned around a live view of the same state the widget renders:
+ *   - Now Playing hero card (live via [SonosRepository.widgetState])
+ *   - Connection health with prerequisites checklist and one-tap scan
+ *   - Speaker list with default-room selection
+ *   - Sonos OAuth account (cloud fallback)
+ *   - Network tools (manual IPs), preferences, and maintenance
  *
- * Uses standard Jetpack Compose (NOT Glance) for the UI.
+ * Not a remote control by design — playback control lives on the widget and
+ * in the Sonos app; this screen is for setup, diagnostics, and glanceable
+ * status.
+ *
+ * Uses standard Jetpack Compose (NOT Glance) with Material 3 dynamic color.
  */
 class SonosCompanionActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "SonosCompanionActivity"
+        private const val SONOS_S2_PACKAGE = "com.sonos.acr2"
+        private const val SONOS_S1_PACKAGE = "com.sonos.acr"
     }
 
     private lateinit var tokenStore: TokenStore
@@ -104,32 +130,29 @@ class SonosCompanionActivity : ComponentActivity() {
     private lateinit var cloudController: CloudSonosController
     private lateinit var preferences: SonosPreferences
 
-    // UI state
-    private var uiState by mutableStateOf(CompanionUiState.IDLE)
-    private var statusMessage by mutableStateOf("")
+    // Account state
+    private var accountState by mutableStateOf(AccountUiState.IDLE)
+    private var accountMessage by mutableStateOf("")
     private var isLoggedIn by mutableStateOf(false)
 
     // Settings state
     private val manualIps = mutableStateListOf<String>()
     private val ipTestResults = mutableStateMapOf<String, Boolean?>()
-    private var discoveredZones by mutableStateOf<List<Zone>>(emptyList())
     private var defaultZoneName by mutableStateOf<String?>(null)
     private var defaultZoneId by mutableStateOf<String?>(null)
     private var preferredService by mutableStateOf<String?>(null)
     private var cacheSizeBytes by mutableLongStateOf(0L)
 
-    // Connection status state
-    private var connectionStatus by mutableStateOf("Unknown")
-    private var connectedSpeakerName by mutableStateOf<String?>(null)
+    // Connection prerequisites
     private var connectedSpeakerIp by mutableStateOf<String?>(null)
-    private var connectionMethod by mutableStateOf<String?>(null)
     private var isOnWifi by mutableStateOf(false)
     private var hasNearbyPermission by mutableStateOf(false)
     private var isScanning by mutableStateOf(false)
+    private var scanMessage by mutableStateOf<String?>(null)
 
     private val scope = CoroutineScope(Dispatchers.Main)
 
-    // Runtime permission launcher for NEARBY_WIFI_DEVICES (Android 13+ / targetSdk 33+)
+    // Runtime permission launcher for NEARBY_WIFI_DEVICES (Android 13+)
     private val nearbyWifiPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -151,17 +174,25 @@ class SonosCompanionActivity : ComponentActivity() {
 
         isLoggedIn = tokenStore.isLoggedIn
 
-        // Check if launched from an OAuth callback redirect
         handleIntent(intent)
-
-        // Request NEARBY_WIFI_DEVICES permission if needed (Android 13+)
         requestNearbyWifiPermissionIfNeeded()
-
-        // Load persisted settings
         loadSettings()
 
         setContent {
-            MaterialTheme {
+            val darkTheme = isSystemInDarkTheme()
+            val colorScheme = when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && darkTheme ->
+                    dynamicDarkColorScheme(this)
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+                    dynamicLightColorScheme(this)
+                darkTheme -> darkColorScheme()
+                else -> lightColorScheme()
+            }
+
+            MaterialTheme(colorScheme = colorScheme) {
+                val repo = remember { SonosRepository.getInstance(applicationContext) }
+                val widgetState by repo.widgetState.collectAsState()
+
                 Scaffold { padding ->
                     Surface(
                         modifier = Modifier
@@ -169,25 +200,25 @@ class SonosCompanionActivity : ComponentActivity() {
                             .padding(padding)
                     ) {
                         CompanionScreen(
-                            uiState = uiState,
-                            statusMessage = statusMessage,
+                            state = widgetState,
+                            accountState = accountState,
+                            accountMessage = accountMessage,
                             isLoggedIn = isLoggedIn,
                             onSignIn = ::startOAuthLogin,
                             onSignOut = ::signOut,
-                            connectionStatus = connectionStatus,
-                            connectedSpeakerName = connectedSpeakerName,
                             connectedSpeakerIp = connectedSpeakerIp,
-                            connectionMethod = connectionMethod,
                             isOnWifi = isOnWifi,
                             hasNearbyPermission = hasNearbyPermission,
                             isScanning = isScanning,
+                            scanMessage = scanMessage,
                             onScan = ::scanForSpeakers,
+                            onOpenSonos = ::openSonosApp,
                             manualIps = manualIps,
                             ipTestResults = ipTestResults,
                             onAddIp = ::addManualIp,
                             onRemoveIp = ::removeManualIp,
                             onTestIp = ::testManualIp,
-                            discoveredZones = discoveredZones,
+                            defaultZoneId = defaultZoneId,
                             defaultZoneName = defaultZoneName,
                             onSelectDefaultZone = ::selectDefaultZone,
                             onClearDefaultZone = ::clearDefaultZone,
@@ -201,6 +232,14 @@ class SonosCompanionActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Wake the polling service while the user is looking at the app so
+        // the Now Playing card and connection status stay live.
+        PlaybackService.start(this)
+        refreshPrerequisites()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -224,15 +263,15 @@ class SonosCompanionActivity : ComponentActivity() {
 
             if (error != null) {
                 Log.e(TAG, "OAuth error: $error")
-                uiState = CompanionUiState.ERROR
-                statusMessage = "Authorization denied: $error"
+                accountState = AccountUiState.ERROR
+                accountMessage = "Authorization denied: $error"
                 return
             }
 
             if (code == null) {
                 Log.e(TAG, "No authorization code in callback")
-                uiState = CompanionUiState.ERROR
-                statusMessage = "No authorization code received"
+                accountState = AccountUiState.ERROR
+                accountMessage = "No authorization code received"
                 return
             }
 
@@ -240,8 +279,8 @@ class SonosCompanionActivity : ComponentActivity() {
             // unsolicited callback with no persisted pending state is rejected.
             if (!oAuthManager.verifyAndConsumeState(state)) {
                 Log.e(TAG, "OAuth state verification failed (got=$state)")
-                uiState = CompanionUiState.ERROR
-                statusMessage = "Security check failed (state mismatch)"
+                accountState = AccountUiState.ERROR
+                accountMessage = "Security check failed (state mismatch)"
                 return
             }
 
@@ -250,27 +289,26 @@ class SonosCompanionActivity : ComponentActivity() {
     }
 
     private fun startOAuthLogin() {
-        uiState = CompanionUiState.LOADING
-        statusMessage = "Opening Sonos login..."
+        accountState = AccountUiState.LOADING
+        accountMessage = "Opening Sonos login..."
         oAuthManager.launchLogin(this)
     }
 
     private fun exchangeCode(code: String) {
-        uiState = CompanionUiState.LOADING
-        statusMessage = "Signing in..."
+        accountState = AccountUiState.LOADING
+        accountMessage = "Signing in..."
 
         scope.launch {
             val success = oAuthManager.handleCallback(code)
             if (success) {
                 isLoggedIn = true
-                uiState = CompanionUiState.SUCCESS
-                statusMessage = "Successfully signed in to Sonos!"
+                accountState = AccountUiState.SUCCESS
+                accountMessage = "Signed in to Sonos"
                 Log.d(TAG, "OAuth flow completed successfully — triggering discovery")
-                // Trigger immediate discovery now that cloud credentials are available
                 PlaybackService.pollNow(applicationContext)
             } else {
-                uiState = CompanionUiState.ERROR
-                statusMessage = "Failed to complete sign in. Please try again."
+                accountState = AccountUiState.ERROR
+                accountMessage = "Failed to complete sign in. Please try again."
                 Log.e(TAG, "Token exchange failed")
             }
         }
@@ -280,8 +318,8 @@ class SonosCompanionActivity : ComponentActivity() {
         oAuthManager.logout()
         cloudController.clearCache()
         isLoggedIn = false
-        uiState = CompanionUiState.IDLE
-        statusMessage = ""
+        accountState = AccountUiState.IDLE
+        accountMessage = ""
         Log.d(TAG, "User signed out")
     }
 
@@ -290,7 +328,6 @@ class SonosCompanionActivity : ComponentActivity() {
     // ──────────────────────────────────────────────
 
     private fun requestNearbyWifiPermissionIfNeeded() {
-        // NEARBY_WIFI_DEVICES is only required on Android 13 (API 33) and above
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
 
         val status = ContextCompat.checkSelfPermission(
@@ -308,74 +345,43 @@ class SonosCompanionActivity : ComponentActivity() {
 
     private fun loadSettings() {
         scope.launch {
-            // Load manual IPs
             val ips = withContext(Dispatchers.IO) { preferences.getManualIps() }
             manualIps.clear()
             manualIps.addAll(ips)
 
-            // Load default zone
             val zone = withContext(Dispatchers.IO) { preferences.getDefaultZone() }
             defaultZoneId = zone?.id
             defaultZoneName = zone?.name
 
-            // Load preferred service
             preferredService = withContext(Dispatchers.IO) { preferences.getPreferredService() }
 
-            // Load discovered zones from widget state
-            val repo = SonosRepository.getInstance(applicationContext)
-            discoveredZones = repo.widgetState.value.zones
-
-            // Load cache size
             cacheSizeBytes = withContext(Dispatchers.IO) {
                 AlbumArtLoader.getDiskCacheSize(applicationContext)
             }
 
-            // Refresh connection status
-            refreshConnectionStatus()
+            refreshPrerequisites()
         }
     }
 
-    private fun refreshConnectionStatus() {
+    private fun refreshPrerequisites() {
         val repo = SonosRepository.getInstance(applicationContext)
-        val state = repo.widgetState.value
 
-        // Check prerequisites
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
         val caps = cm.getNetworkCapabilities(cm.activeNetwork)
         isOnWifi = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
         hasNearbyPermission = repo.hasLocalNetworkPermission()
 
-        // Determine connection info from widget state
-        val mode = state.connectionMode
-        connectionMethod = when (mode) {
-            com.sycamorecreek.sonoswidget.widget.ConnectionMode.LOCAL_SSDP -> "Auto-discovery (SSDP)"
-            com.sycamorecreek.sonoswidget.widget.ConnectionMode.LOCAL_MDNS -> "Auto-discovery (mDNS)"
-            com.sycamorecreek.sonoswidget.widget.ConnectionMode.LOCAL_MANUAL_IP -> "Manual IP"
-            com.sycamorecreek.sonoswidget.widget.ConnectionMode.CLOUD -> "Cloud API"
-            com.sycamorecreek.sonoswidget.widget.ConnectionMode.DISCONNECTED -> null
-        }
-
-        if (mode != com.sycamorecreek.sonoswidget.widget.ConnectionMode.DISCONNECTED) {
-            connectionStatus = "Connected"
-            connectedSpeakerName = state.activeZone.displayName.ifBlank { null }
-            // IP comes from saved prefs
-            scope.launch {
-                val saved = withContext(Dispatchers.IO) {
-                    preferences.activeSpeaker.first()
-                }
-                connectedSpeakerIp = saved?.ip
-            }
-        } else {
-            connectionStatus = if (state.isOffline) "Offline" else "Disconnected"
-            connectedSpeakerName = null
-            connectedSpeakerIp = null
+        scope.launch {
+            connectedSpeakerIp = withContext(Dispatchers.IO) {
+                preferences.activeSpeaker.first()
+            }?.ip
         }
     }
 
     private fun scanForSpeakers() {
         if (isScanning) return
         isScanning = true
-        connectionStatus = "Scanning..."
+        scanMessage = null
         scope.launch {
             try {
                 val repo = SonosRepository.getInstance(applicationContext)
@@ -383,26 +389,47 @@ class SonosCompanionActivity : ComponentActivity() {
                     repo.discoverAndConnect()
                 }
                 if (found) {
-                    // Trigger an immediate poll to populate full state
-                    withContext(Dispatchers.IO) {
-                        repo.pollAndUpdate()
-                    }
-                    refreshConnectionStatus()
-                    // Reload zones
-                    discoveredZones = repo.widgetState.value.zones
+                    withContext(Dispatchers.IO) { repo.pollAndUpdate() }
+                    val zoneCount = repo.widgetState.value.zones.size
+                    scanMessage = if (zoneCount > 0) "Found $zoneCount speaker(s)" else "Connected"
                     PlaybackService.pollNow(applicationContext)
                 } else {
-                    connectionStatus = "No speakers found"
-                    connectionMethod = null
-                    connectedSpeakerName = null
-                    connectedSpeakerIp = null
+                    scanMessage = "No speakers found"
                 }
+                refreshPrerequisites()
             } catch (e: Exception) {
                 Log.e(TAG, "Scan failed", e)
-                connectionStatus = "Scan failed: ${e.message}"
+                scanMessage = "Scan failed: ${e.message}"
             } finally {
                 isScanning = false
             }
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    // Open Sonos app
+    // ──────────────────────────────────────────────
+
+    private fun openSonosApp() {
+        val intent = packageManager.getLaunchIntentForPackage(SONOS_S2_PACKAGE)
+            ?: packageManager.getLaunchIntentForPackage(SONOS_S1_PACKAGE)
+        if (intent != null) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                startActivity(intent)
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to launch Sonos app", e)
+            }
+        }
+        // Not installed — offer the Play Store listing
+        try {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$SONOS_S2_PACKAGE"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to open Play Store", e)
         }
     }
 
@@ -503,13 +530,12 @@ class SonosCompanionActivity : ComponentActivity() {
                     }
                     repo.pollAndUpdate()
                 }
-                uiState = CompanionUiState.SUCCESS
-                statusMessage = "Widget refreshed"
+                cacheSizeBytes = withContext(Dispatchers.IO) {
+                    AlbumArtLoader.getDiskCacheSize(applicationContext)
+                }
                 Log.d(TAG, "Manual widget refresh triggered")
             } catch (e: Exception) {
                 Log.e(TAG, "Widget refresh failed", e)
-                uiState = CompanionUiState.ERROR
-                statusMessage = "Refresh failed: ${e.message}"
             }
         }
     }
@@ -560,7 +586,7 @@ private fun formatCacheSize(bytes: Long): String {
     }
 }
 
-private enum class CompanionUiState {
+private enum class AccountUiState {
     IDLE, LOADING, SUCCESS, ERROR
 }
 
@@ -568,28 +594,27 @@ private enum class CompanionUiState {
 // Compose UI
 // ──────────────────────────────────────────────
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CompanionScreen(
-    uiState: CompanionUiState,
-    statusMessage: String,
+    state: SonosWidgetState,
+    accountState: AccountUiState,
+    accountMessage: String,
     isLoggedIn: Boolean,
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
-    connectionStatus: String,
-    connectedSpeakerName: String?,
     connectedSpeakerIp: String?,
-    connectionMethod: String?,
     isOnWifi: Boolean,
     hasNearbyPermission: Boolean,
     isScanning: Boolean,
+    scanMessage: String?,
     onScan: () -> Unit,
+    onOpenSonos: () -> Unit,
     manualIps: List<String>,
     ipTestResults: Map<String, Boolean?>,
     onAddIp: (String) -> Unit,
     onRemoveIp: (String) -> Unit,
     onTestIp: (String) -> Unit,
-    discoveredZones: List<Zone>,
+    defaultZoneId: String?,
     defaultZoneName: String?,
     onSelectDefaultZone: (Zone) -> Unit,
     onClearDefaultZone: () -> Unit,
@@ -603,86 +628,74 @@ private fun CompanionScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(horizontal = 20.dp, vertical = 16.dp)
     ) {
         // ── Header ──
-        Text(
-            text = "Sonos Widget",
-            style = MaterialTheme.typography.headlineLarge,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-            text = "Settings",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // ── Connection Status Section ──
-        SettingsSection(title = "Connection Status") {
-            // Status row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                val statusColor = when (connectionStatus) {
-                    "Connected" -> MaterialTheme.colorScheme.primary
-                    "Scanning..." -> MaterialTheme.colorScheme.tertiary
-                    "Offline", "Disconnected", "No speakers found" -> MaterialTheme.colorScheme.error
-                    else -> if (connectionStatus.startsWith("Scan failed")) MaterialTheme.colorScheme.error
-                           else MaterialTheme.colorScheme.onSurfaceVariant
-                }
-                Icon(
-                    imageVector = when (connectionStatus) {
-                        "Connected" -> Icons.Default.Check
-                        else -> Icons.Default.Close
-                    },
-                    contentDescription = null,
-                    tint = statusColor,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = connectionStatus,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = statusColor
+                    text = "Sonos Widget",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Companion",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            ConnectionPill(state)
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ── Now Playing hero ──
+        NowPlayingCard(state = state, onOpenSonos = onOpenSonos)
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // ── Connection ──
+        SectionCard(title = "Connection") {
+            val method = when (state.connectionMode) {
+                ConnectionMode.LOCAL_SSDP -> "Auto-discovery (SSDP)"
+                ConnectionMode.LOCAL_MDNS -> "Auto-discovery (mDNS)"
+                ConnectionMode.LOCAL_MANUAL_IP -> "Manual IP"
+                ConnectionMode.CLOUD -> "Cloud API"
+                ConnectionMode.DISCONNECTED -> null
+            }
+
+            if (method != null) {
+                DetailRow("Room", state.activeZone.displayName.ifBlank { "—" })
+                DetailRow("Speaker IP", connectedSpeakerIp ?: "—")
+                DetailRow("Method", method)
+            } else {
+                Text(
+                    text = if (state.isOffline) "Offline — no local network or internet"
+                        else "Not connected to a speaker",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error
                 )
             }
 
-            // Connection details when connected
-            if (connectedSpeakerName != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                StatusRow("Speaker", connectedSpeakerName!!)
-            }
-            if (connectedSpeakerIp != null) {
-                StatusRow("IP", connectedSpeakerIp!!)
-            }
-            if (connectionMethod != null) {
-                StatusRow("Method", connectionMethod!!)
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             HorizontalDivider()
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // Prerequisites
-            StatusRow("Wi-Fi", if (isOnWifi) "Connected" else "Not connected")
-            StatusRow("Nearby Devices Permission", if (hasNearbyPermission) "Granted" else "Not granted")
+            ChecklistRow("Wi-Fi connected", isOnWifi)
+            ChecklistRow("Nearby devices permission", hasNearbyPermission)
 
             if (!isOnWifi) {
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Auto-discovery requires Wi-Fi connection to the same network as your Sonos speakers",
+                    text = "Auto-discovery requires Wi-Fi on the same network as your speakers",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
             } else if (!hasNearbyPermission) {
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = "Grant \"Nearby devices\" permission in app settings for auto-discovery",
                     style = MaterialTheme.typography.bodySmall,
@@ -704,83 +717,136 @@ private fun CompanionScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                 }
-                Text(if (isScanning) "Scanning..." else "Scan for Speakers")
+                Text(if (isScanning) "Scanning…" else "Scan for speakers")
+            }
+
+            if (scanMessage != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = scanMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (scanMessage.startsWith("Found") || scanMessage == "Connected")
+                        MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error
+                )
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // ── Cloud Account Section ──
-        SettingsSection(title = "Sonos Account") {
+        // ── Speakers ──
+        SectionCard(title = "Speakers") {
+            if (state.zones.isEmpty()) {
+                Text(
+                    text = "No speakers discovered yet. Tap \"Scan for speakers\" or add the widget to your home screen.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    text = "Tap the star to make a room the widget's default",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                state.zones.forEachIndexed { index, zone ->
+                    if (index > 0) HorizontalDivider()
+                    SpeakerRow(
+                        zone = zone,
+                        isActive = zone.id == state.activeZone.id,
+                        isDefault = zone.id == defaultZoneId,
+                        onToggleDefault = {
+                            if (zone.id == defaultZoneId) onClearDefaultZone()
+                            else onSelectDefaultZone(zone)
+                        }
+                    )
+                }
+                if (defaultZoneName != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Default room: $defaultZoneName",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // ── Sonos Account ──
+        SectionCard(title = "Sonos Account") {
             if (isLoggedIn) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = "Connected to Sonos",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Signed in",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Cloud control available when away from home",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     OutlinedButton(onClick = onSignOut) {
-                        Text("Sign Out")
+                        Text("Sign out")
                     }
                 }
             } else {
                 Text(
-                    text = "Sign in to enable cloud control when away from home",
+                    text = "Sign in to enable cloud control as a fallback when local discovery fails",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Button(
                     onClick = onSignIn,
-                    enabled = uiState != CompanionUiState.LOADING,
+                    enabled = accountState != AccountUiState.LOADING,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Sign in with Sonos")
                 }
             }
 
-            // Status feedback
-            if (statusMessage.isNotBlank()) {
+            if (accountMessage.isNotBlank()) {
                 Spacer(modifier = Modifier.height(8.dp))
-                when (uiState) {
-                    CompanionUiState.LOADING -> {
+                when (accountState) {
+                    AccountUiState.LOADING -> {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = statusMessage,
+                                text = accountMessage,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
-                    CompanionUiState.SUCCESS -> {
-                        Text(
-                            text = statusMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    CompanionUiState.ERROR -> {
-                        Text(
-                            text = statusMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                    CompanionUiState.IDLE -> {}
+                    AccountUiState.SUCCESS -> Text(
+                        text = accountMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    AccountUiState.ERROR -> Text(
+                        text = accountMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    AccountUiState.IDLE -> {}
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // ── Manual Speaker IPs Section ──
-        SettingsSection(title = "Manual Speaker IPs") {
+        // ── Manual IPs ──
+        SectionCard(title = "Manual Speaker IPs") {
             Text(
                 text = "Add speaker IPs if automatic discovery fails on your network",
                 style = MaterialTheme.typography.bodySmall,
@@ -789,7 +855,6 @@ private fun CompanionScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Existing IPs
             manualIps.forEach { ip ->
                 ManualIpRow(
                     ip = ip,
@@ -800,7 +865,6 @@ private fun CompanionScreen(
                 Spacer(modifier = Modifier.height(4.dp))
             }
 
-            // Add new IP input
             var newIp by remember { mutableStateOf("") }
             var showIpError by remember { mutableStateOf(false) }
 
@@ -839,58 +903,25 @@ private fun CompanionScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // ── Default Zone Section ──
-        SettingsSection(title = "Default Zone") {
+        // ── Preferences ──
+        SectionCard(title = "Preferences") {
             Text(
-                text = "Select the speaker or room to control by default",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = "Preferred music service",
+                style = MaterialTheme.typography.bodyMedium
             )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (discoveredZones.isEmpty()) {
-                Text(
-                    text = "No speakers discovered yet. Add the widget to your home screen to start discovery.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                ZoneDropdown(
-                    zones = discoveredZones,
-                    selectedName = defaultZoneName,
-                    onSelect = onSelectDefaultZone,
-                    onClear = onClearDefaultZone
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // ── Preferred Music Service Section ──
-        SettingsSection(title = "Preferred Music Service") {
-            Text(
-                text = "Default source shown in the widget's source switcher",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
+            Spacer(modifier = Modifier.height(8.dp))
             ServicePicker(
                 selectedService = preferredService,
                 onSelect = onSelectService
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // ── Cache Management Section ──
-        SettingsSection(title = "Cache Management") {
+        // ── Maintenance ──
+        SectionCard(title = "Maintenance") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -908,37 +939,227 @@ private fun CompanionScreen(
                     )
                 }
                 OutlinedButton(onClick = onClearCache) {
-                    Text("Clear Cache")
+                    Text("Clear")
                 }
             }
-        }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // ── Widget Refresh Section ──
-        SettingsSection(title = "Widget") {
-            Text(
-                text = "Force an immediate widget state refresh",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             Spacer(modifier = Modifier.height(12.dp))
-            Button(
+            OutlinedButton(
                 onClick = onRefreshWidget,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Refresh Now")
+                Icon(
+                    Icons.Default.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Refresh widget now")
             }
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(28.dp))
+    }
+}
+
+// ──────────────────────────────────────────────
+// Now Playing hero
+// ──────────────────────────────────────────────
+
+@Composable
+private fun NowPlayingCard(
+    state: SonosWidgetState,
+    onOpenSonos: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val hasTrack = state.currentTrack.name.isNotBlank()
+    // Reload art from disk whenever the track's art URL changes
+    val albumArt = remember(state.currentTrack.artUrl, state.lastUpdatedMs) {
+        AlbumArtLoader.loadFromDisk(context)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Art / placeholder
+                Box(
+                    modifier = Modifier
+                        .size(76.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (albumArt != null && hasTrack) {
+                        Image(
+                            bitmap = albumArt.asImageBitmap(),
+                            contentDescription = "Album art",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_music_note),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(14.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = when {
+                            state.currentSource == "TV" -> "TV Audio"
+                            hasTrack -> state.currentTrack.name
+                            else -> "Nothing playing"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2
+                    )
+                    if (hasTrack && state.currentTrack.artist.isNotBlank()) {
+                        Text(
+                            text = state.currentTrack.artist,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                    if (state.activeZone.displayName.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_speaker_device),
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "${state.activeZone.displayName} · ${state.volume}%",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PlaybackStateChip(state.playbackState, state.connectionMode)
+                Spacer(modifier = Modifier.weight(1f))
+                Button(onClick = onOpenSonos) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Open Sonos")
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun StatusRow(label: String, value: String) {
+private fun PlaybackStateChip(playback: PlaybackState, mode: ConnectionMode) {
+    val (label, color) = when {
+        mode == ConnectionMode.DISCONNECTED -> "Disconnected" to MaterialTheme.colorScheme.error
+        playback == PlaybackState.PLAYING -> "Playing" to MaterialTheme.colorScheme.primary
+        playback == PlaybackState.PAUSED -> "Paused" to MaterialTheme.colorScheme.tertiary
+        playback == PlaybackState.TRANSITIONING -> "Loading…" to MaterialTheme.colorScheme.tertiary
+        else -> "Stopped" to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    AssistChip(
+        onClick = {},
+        label = { Text(label) },
+        leadingIcon = {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(color)
+            )
+        }
+    )
+}
+
+/** Small colored status pill shown in the header. */
+@Composable
+private fun ConnectionPill(state: SonosWidgetState) {
+    val connected = state.connectionMode != ConnectionMode.DISCONNECTED
+    val color = if (connected) Color(0xFF34C759) else MaterialTheme.colorScheme.error
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = if (connected) "Connected" else "Offline",
+            style = MaterialTheme.typography.labelMedium
+        )
+    }
+}
+
+// ──────────────────────────────────────────────
+// Shared building blocks
+// ──────────────────────────────────────────────
+
+@Composable
+private fun SectionCard(
+    title: String,
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = title.uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            content()
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(
@@ -949,32 +1170,75 @@ private fun StatusRow(label: String, value: String) {
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface
+            fontWeight = FontWeight.Medium
         )
     }
 }
 
 @Composable
-private fun SettingsSection(
-    title: String,
-    content: @Composable () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-        )
+private fun ChecklistRow(label: String, ok: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Icon(
+            imageVector = if (ok) Icons.Default.Check else Icons.Default.Close,
+            contentDescription = null,
+            tint = if (ok) Color(0xFF34C759) else MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
+
+@Composable
+private fun SpeakerRow(
+    zone: Zone,
+    isActive: Boolean,
+    isDefault: Boolean,
+    onToggleDefault: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.ic_speaker_device),
+            contentDescription = null,
+            tint = if (isActive) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary
+                text = zone.displayName,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
             )
-            Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(12.dp))
-            content()
+            if (isActive) {
+                Text(
+                    text = "Active on widget",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+        IconButton(onClick = onToggleDefault) {
+            Icon(
+                imageVector = Icons.Default.Star,
+                contentDescription = if (isDefault) "Clear default room" else "Set as default room",
+                tint = if (isDefault) Color(0xFFF5B942)
+                    else MaterialTheme.colorScheme.outlineVariant
+            )
         }
     }
 }
@@ -996,7 +1260,6 @@ private fun ManualIpRow(
             modifier = Modifier.weight(1f)
         )
 
-        // Test result indicator
         when (testResult) {
             null -> CircularProgressIndicator(modifier = Modifier.size(16.dp))
             true -> Icon(
@@ -1026,64 +1289,6 @@ private fun ManualIpRow(
                 tint = MaterialTheme.colorScheme.error,
                 modifier = Modifier.size(20.dp)
             )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ZoneDropdown(
-    zones: List<Zone>,
-    selectedName: String?,
-    onSelect: (Zone) -> Unit,
-    onClear: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = it },
-            modifier = Modifier.weight(1f)
-        ) {
-            OutlinedTextField(
-                value = selectedName ?: "Auto (last used)",
-                onValueChange = {},
-                readOnly = true,
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-                modifier = Modifier
-                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                    .fillMaxWidth()
-            )
-
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                zones.forEach { zone ->
-                    DropdownMenuItem(
-                        text = { Text(zone.displayName) },
-                        onClick = {
-                            onSelect(zone)
-                            expanded = false
-                        }
-                    )
-                }
-            }
-        }
-
-        if (selectedName != null) {
-            Spacer(modifier = Modifier.width(8.dp))
-            IconButton(onClick = onClear) {
-                Icon(
-                    Icons.Default.Close,
-                    contentDescription = "Clear default zone",
-                    modifier = Modifier.size(20.dp)
-                )
-            }
         }
     }
 }

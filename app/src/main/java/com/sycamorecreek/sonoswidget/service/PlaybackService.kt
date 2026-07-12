@@ -69,7 +69,8 @@ class PlaybackService : Service() {
 
         // Disconnected exponential backoff
         private const val POLL_DISCONNECTED_BASE_MS = 30_000L
-        private const val POLL_DISCONNECTED_MAX_MS = 300_000L // 5 min cap
+        private const val POLL_DISCONNECTED_MAX_MS = 300_000L // 5 min cap (off Wi-Fi)
+        private const val POLL_DISCONNECTED_WIFI_MAX_MS = 60_000L // 1 min cap on Wi-Fi
 
         // Idle teardown: service self-stops after this duration of STOPPED state
         // per PRD §12.1: "foreground service is torn down after 5 minutes of silence"
@@ -303,13 +304,25 @@ class PlaybackService : Service() {
             playbackState == PlaybackState.TRANSITIONING -> POLL_PLAYING_MS
             playbackState == PlaybackState.PAUSED -> POLL_PAUSED_MS
             !isConnected -> {
-                // Exponential backoff: base * 2^n, capped
+                // Exponential backoff: base * 2^n, capped. While on Wi-Fi the
+                // retry is a single unicast probe to the saved speaker IP
+                // (cheap), so cap much lower — the speaker may just be waking
+                // up or the network settling after a reconnect.
+                val cap = if (isOnWifi()) POLL_DISCONNECTED_WIFI_MAX_MS
+                    else POLL_DISCONNECTED_MAX_MS
                 val backoff = POLL_DISCONNECTED_BASE_MS *
                     (1L shl consecutiveDisconnects.coerceAtMost(4))
-                backoff.coerceAtMost(POLL_DISCONNECTED_MAX_MS)
+                backoff.coerceAtMost(cap)
             }
             else -> POLL_STOPPED_MS // STOPPED but connected
         }
+    }
+
+    private fun isOnWifi(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE)
+            as android.net.ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
     }
 
     /**

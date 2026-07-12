@@ -1,4 +1,4 @@
-# CLAUDE.md — Sonos Widget
+# AGENTS.md — Sonos Widget
 
 ## Project Overview
 
@@ -42,10 +42,6 @@ app/             Entry point (Application, CompanionActivity)
 | `SonosWidget.kt` | Glance widget class. Responsive size mode with 3 buckets (Mini/Compact/Full). |
 | `ExpandedLayout.kt` | Full 6x5 layout: album art, controls, volume, speakers, queue. |
 | `CompactLayout.kt` | Compact 4x2 layout: small art, track info, basic controls. |
-| `MiniLayout.kt` | Mini ~240x80 layout (lock screen): art thumbnail, title/artist, play + next. |
-| `WidgetTheme.kt` | "Glass on art" design tokens: white-alpha text/surfaces, palette accent resolution. |
-| `GlassComponents.kt` | Shared Glance building blocks: `ImmersiveSurface`, icon buttons, chips, section headers. |
-| `WidgetBackgroundRenderer.kt` | Renders the blurred/dimmed album-art widget background (plus palette-gradient fallback), cached to disk like album art. |
 | `AlbumArtLoader.kt` | Downloads album art via Coil, caches to internal storage as WebP. |
 | `SonosWidgetState.kt` | Data classes for widget state (`SonosWidgetState`, `Track`, `Zone`, `QueueItem`, etc.). |
 | `WidgetActions.kt` | Glance `ActionCallback` implementations for play/pause, skip, volume, grouping, etc. |
@@ -54,29 +50,23 @@ app/             Entry point (Application, CompanionActivity)
 
 ```
 discoverAndConnect()
-  ├─ trySavedSpeaker()       Unicast probe of last-known IP (fast path; immune to multicast flakiness)
   ├─ tryLocalDiscovery()     SSDP + mDNS → findBestCoordinator() → pick PLAYING speaker
   ├─ tryManualIps()          User-configured IPs → coordinator redirect
   └─ tryCloudFallback()      Sonos Cloud REST API (OAuth required)
 ```
 
-**Reconnect invariants:** transient local failures must NOT clear the saved speaker or cached album art — both power instant reconnection (`trySavedSpeaker`) and the widget's "keep showing the last track while reconnecting" behavior. Every `pushDisconnectedState()` arms `WifiReconnectWorker` (one-shot WorkManager job with an UNMETERED network constraint) so Wi-Fi reattachment itself triggers reconnection even after the polling service tears down.
-
 ### Polling Loop (PlaybackService)
 
 ```
 pollOnce() → repository.pollAndUpdate() → pollLocal() or pollCloud()
-  Intervals: PLAYING=2s, PAUSED=4s, STOPPED=15s
-  DISCONNECTED: exponential 30s → capped at 60s on Wi-Fi, 300s off Wi-Fi
+  Intervals: PLAYING=2s, PAUSED=10s, STOPPED=15s, DISCONNECTED=30s-300s (exponential)
   STOPPED re-scan: After 30s STOPPED, probes all coordinators for a PLAYING one
-  Idle teardown (5 min) → WidgetRefreshWorker (15 min periodic)
-                        + WifiReconnectWorker (fires when Wi-Fi returns)
 ```
 
 ### Widget Size Buckets
 
 ```
-MINI_SIZE  = 240×80dp   → MiniLayout (lock screen)
+MINI_SIZE  = 240×80dp   → CompactLayout (lock screen)
 HALF_SIZE  = 320×180dp  → CompactLayout (4x2)
 FULL_SIZE  = 400×340dp  → ExpandedLayout (5x5+, 6x5)
 ```
@@ -105,7 +95,6 @@ Widget state flows: `SonosRepository` → `WidgetStateMapper` → `WidgetStateSt
 3. **Zone group XML:** The `<ZoneGroupMember>` regex must handle both self-closing (`/>`) and non-self-closing (`>...</ZoneGroupMember>`) tags for surround sound setups.
 4. **Album art URLs:** Double-encoded XML entities in DIDL-Lite (`&amp;amp;` after SOAP + DIDL decoding). The `decodeXmlEntities()` in `extractDidlValue()` handles this.
 5. **Widget size thresholds:** Must match real Android dp dimensions, not desired pixel sizes. Use the formula `(cells × 73) - 16`.
-6. **Immersive theme invariants:** The widget background is always dark (blurred art under a scrim, or a dark gradient fallback), so all foreground styling must use `WidgetTheme` white-alpha tokens — never raw palette colors, which carry no contrast guarantee. The palette accent (`WidgetTheme.accent()`) is reserved for active states (shuffle/repeat on, grouped chips). `WidgetBackgroundRenderer.renderAndCache` is keyed by art URL and called from `SonosRepository` next to palette extraction; clear it wherever `AlbumArtLoader` caches are cleared.
 
 ## Dependencies (Key)
 

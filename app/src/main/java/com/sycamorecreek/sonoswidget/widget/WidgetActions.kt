@@ -328,6 +328,13 @@ class SwitchZoneAction : ActionCallback {
         Log.d(TAG, "SwitchZoneAction triggered for zone: $zoneId")
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
+
+        // Also close the room selector when a zone is switched
+        val key = androidx.datastore.preferences.core.booleanPreferencesKey("show_room_selector")
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            prefs[key] = false
+        }
+
         val repo = SonosRepository.getInstance(context)
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.SWITCH_ZONE, zoneId)
@@ -544,5 +551,50 @@ class OpenSonosAppAction : ActionCallback {
                 Log.e(TAG, "Failed to open Play Store", e2)
             }
         }
+    }
+}
+
+class ToggleRoomSelectorAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        val key = androidx.datastore.preferences.core.booleanPreferencesKey("show_room_selector")
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            val current = prefs[key] ?: false
+            prefs[key] = !current
+        }
+        SonosWidget().update(context, glanceId)
+    }
+}
+
+class ToggleSpeakersAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        val key = androidx.datastore.preferences.core.booleanPreferencesKey("show_speakers")
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            val current = prefs[key] ?: true
+            prefs[key] = !current
+        }
+        SonosWidget().update(context, glanceId)
+    }
+}
+
+class ToggleFavoritesAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        val key = androidx.datastore.preferences.core.booleanPreferencesKey("show_favorites")
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            val current = prefs[key] ?: true
+            prefs[key] = !current
+        }
+        SonosWidget().update(context, glanceId)
     }
 }

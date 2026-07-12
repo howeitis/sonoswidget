@@ -26,17 +26,59 @@ import java.util.concurrent.TimeUnit
  *   "urn:schemas-upnp-org:service:{ServiceType}:1#{ActionName}"
  */
 class SonosSoapClient(
-    private val httpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(2, TimeUnit.SECONDS)
-        .readTimeout(3, TimeUnit.SECONDS)
-        .writeTimeout(2, TimeUnit.SECONDS)
-        .build()
+    baseClient: OkHttpClient = defaultBackgroundClient()
 ) {
+
+    /**
+     * Patient client for background reads (polling, browse, topology). A 3s read
+     * tolerates a momentarily slow speaker without a false failure.
+     */
+    private val backgroundClient: OkHttpClient = baseClient
+
+    /**
+     * Snappy client for user-initiated commands (play/pause/skip/volume). Tighter
+     * timeouts so a tap that won't land surfaces "tap to retry" in ~1.5s instead of
+     * making the user wait out the patient timeout. Shares the connection pool and
+     * dispatcher of [backgroundClient] via newBuilder() — no duplicate resources.
+     */
+    private val controlClient: OkHttpClient = baseClient.newBuilder()
+        .connectTimeout(1500, TimeUnit.MILLISECONDS)
+        .readTimeout(1500, TimeUnit.MILLISECONDS)
+        .writeTimeout(1500, TimeUnit.MILLISECONDS)
+        .build()
+
+    /**
+     * Patient client for inherently slow commands. Loading a large playlist
+     * favorite into the queue (AddURIToQueue) makes the speaker fetch every track
+     * from the music service — a multi-thousand-track Apple Music / YouTube Music
+     * playlist can legitimately take 10-30s. The snappy [controlClient] timeout
+     * would abort it and surface a false "command failed".
+     */
+    private val slowCommandClient: OkHttpClient = baseClient.newBuilder()
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .build()
 
     companion object {
         private const val TAG = "SonosSoapClient"
         private val SOAP_XML_TYPE = "text/xml; charset=\"utf-8\"".toMediaType()
+
+        private fun defaultBackgroundClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(2, TimeUnit.SECONDS)
+            .readTimeout(3, TimeUnit.SECONDS)
+            .writeTimeout(2, TimeUnit.SECONDS)
+            .build()
     }
+
+    /**
+     * Latency profile for a SOAP call.
+     *  - [CONTROL]: user-initiated commands that should fail fast.
+     *  - [BACKGROUND]: polling/reads that can wait a few seconds.
+     *  - [SLOW_COMMAND]: user-initiated but inherently slow (e.g. enqueuing a
+     *    large playlist), so it gets a long read timeout.
+     */
+    enum class Priority { CONTROL, BACKGROUND, SLOW_COMMAND }
 
     /**
      * UPnP service descriptors for Sonos speakers.
@@ -73,6 +115,7 @@ class SonosSoapClient(
      * @param service   UPnP service to target
      * @param action    SOAP action name (e.g., "Play", "GetTransportInfo")
      * @param params    Ordered list of (name, value) pairs for the SOAP body
+     * @param priority  Latency profile — [Priority.CONTROL] fails fast, [Priority.BACKGROUND] is patient
      * @return Raw XML response body, or null if the request failed
      */
     suspend fun invoke(
@@ -80,13 +123,20 @@ class SonosSoapClient(
         port: Int = 1400,
         service: Service,
         action: String,
-        params: List<Pair<String, String>> = emptyList()
+        params: List<Pair<String, String>> = emptyList(),
+        priority: Priority = Priority.BACKGROUND
     ): String? = withContext(Dispatchers.IO) {
         val url = "http://$ip:$port${service.endpoint}"
         val soapAction = "\"${service.urn}#$action\""
         val body = buildEnvelope(service.urn, action, params)
 
         Log.d(TAG, "SOAP → $action @ $url")
+
+        val client = when (priority) {
+            Priority.CONTROL -> controlClient
+            Priority.SLOW_COMMAND -> slowCommandClient
+            Priority.BACKGROUND -> backgroundClient
+        }
 
         try {
             val request = Request.Builder()
@@ -96,7 +146,7 @@ class SonosSoapClient(
                 .post(body.toRequestBody(SOAP_XML_TYPE))
                 .build()
 
-            httpClient.newCall(request).execute().use { response ->
+            client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val errorBody = response.body?.string()
                     Log.e(TAG, "SOAP ← $action HTTP ${response.code}: $errorBody")

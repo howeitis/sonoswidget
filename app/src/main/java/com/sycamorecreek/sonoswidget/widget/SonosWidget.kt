@@ -12,6 +12,7 @@ import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.provideContent
 import androidx.glance.currentState
 import com.sycamorecreek.sonoswidget.service.AlbumArtLoader
+import com.sycamorecreek.sonoswidget.service.WidgetBackgroundRenderer
 import com.sycamorecreek.sonoswidget.service.WidgetStateStore
 
 /**
@@ -43,9 +44,10 @@ class SonosWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         provideContent {
-            // Load album art inside provideContent so it re-reads from disk
-            // on every recomposition (track changes write new art to disk).
+            // Load bitmaps inside provideContent so they re-read from disk
+            // on every recomposition (track changes write new files to disk).
             val albumArt: Bitmap? = AlbumArtLoader.loadFromDisk(context)
+            val background: Bitmap? = WidgetBackgroundRenderer.loadFromDisk(context)
 
             // Read serialized state from Glance Preferences
             val prefs = currentState<Preferences>()
@@ -59,14 +61,13 @@ class SonosWidget : GlanceAppWidget() {
             val size = LocalSize.current
             when {
                 size.height >= FULL_SIZE.height -> {
-                    ExpandedLayout(state, albumArt)
+                    ExpandedLayout(state, albumArt, background)
                 }
                 size.height >= HALF_SIZE.height -> {
-                    CompactLayout(state, albumArt)
+                    CompactLayout(state, albumArt, background)
                 }
                 else -> {
-                    // TODO: MiniLayout (Task 3.2)
-                    CompactLayout(state, albumArt)
+                    MiniLayout(state, albumArt, background)
                 }
             }
         }

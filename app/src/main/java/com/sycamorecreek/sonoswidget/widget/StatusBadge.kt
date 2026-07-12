@@ -28,13 +28,10 @@ import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
-import androidx.glance.layout.width
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextAlign
 import androidx.glance.text.TextStyle
-import androidx.glance.semantics.contentDescription
-import androidx.glance.semantics.semantics
 import androidx.glance.unit.ColorProvider
 
 /**
@@ -42,11 +39,10 @@ import androidx.glance.unit.ColorProvider
  *
  * The badge displays status text ("Reconnecting…", "Rate Limited", "Updating…",
  * "Offline") as a small pill at the bottom of the album art. The pill uses
- * a semi-transparent dark background (0xCC000000) for readability against
- * any album art color.
+ * a semi-transparent dark background for readability against any album art.
  *
- * Used by both CompactLayout and ExpandedLayout. The badge type is resolved
- * from [SonosWidgetState.activeBadge].
+ * Used by all widget layouts. The badge type is resolved from
+ * [SonosWidgetState.activeBadge].
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
@@ -54,50 +50,53 @@ fun AlbumArtWithBadge(
     albumArt: Bitmap?,
     state: SonosWidgetState,
     size: Dp,
-    chipBg: Color,
     hasTrack: Boolean
 ) {
+    val cornerRadius = if (size >= 100.dp) 18.dp else 14.dp
     Box(
         modifier = GlanceModifier
             .size(size)
-            .cornerRadius(12.dp)
-            .background(chipBg)
+            .cornerRadius(cornerRadius)
+            .background(WidgetTheme.Glass)
             .clickable(actionRunCallback<OpenSonosAppAction>()),
         contentAlignment = Alignment.Center
     ) {
         // Album art or placeholder
-        if (albumArt != null) {
+        if (state.currentSource == "TV") {
+            ThemedIcon(
+                resId = com.sycamorecreek.sonoswidget.R.drawable.ic_tv,
+                size = if (size >= 100.dp) 56.dp else 36.dp,
+                tint = WidgetTheme.TextSecondary,
+                contentDescription = "TV — tap to open Sonos"
+            )
+        } else if (albumArt != null) {
             Image(
                 provider = ImageProvider(albumArt),
                 contentDescription = state.currentTrack.album.ifBlank {
-                    "Album art \u2014 tap to open Sonos"
+                    "Album art — tap to open Sonos"
                 },
                 modifier = GlanceModifier
                     .size(size)
-                    .cornerRadius(12.dp),
+                    .cornerRadius(cornerRadius),
                 contentScale = ContentScale.Crop
             )
         } else {
             val placeholderLabel = if (hasTrack) "Music note — tap to open Sonos"
                 else "Speaker — tap to open Sonos"
-            Box(
-                modifier = GlanceModifier.semantics { contentDescription = placeholderLabel }
-            ) {
-                Text(
-                    text = if (hasTrack) "\uD83C\uDFB5" else "\uD83D\uDD0A",
-                    style = TextStyle(
-                        fontSize = if (size >= 100.dp) 36.sp else 28.sp,
-                        textAlign = TextAlign.Center
-                    )
-                )
-            }
+            ThemedIcon(
+                resId = if (hasTrack) com.sycamorecreek.sonoswidget.R.drawable.ic_music_note
+                    else com.sycamorecreek.sonoswidget.R.drawable.ic_speaker_device,
+                size = if (size >= 100.dp) 44.dp else 30.dp,
+                tint = WidgetTheme.TextTertiary,
+                contentDescription = placeholderLabel
+            )
         }
 
         // Pill badge overlay (bottom-center of album art)
         val badge = state.activeBadge
         if (badge != StatusBadgeType.NONE) {
             Box(
-                modifier = GlanceModifier.size(size),
+                modifier = GlanceModifier.size(size).padding(6.dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
                 StatusPillBadge(badge)
@@ -108,18 +107,14 @@ fun AlbumArtWithBadge(
 
 /**
  * Semi-transparent pill badge showing a status label.
- *
- * Background: 80% opaque black (0xCC000000).
- * Text: white, 10sp bold.
- * Corner radius: 8dp for pill shape.
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
 fun StatusPillBadge(badge: StatusBadgeType) {
     val text = when (badge) {
-        StatusBadgeType.RECONNECTING -> "Reconnecting\u2026"
+        StatusBadgeType.RECONNECTING -> "Reconnecting…"
         StatusBadgeType.RATE_LIMITED -> "Rate Limited"
-        StatusBadgeType.UPDATING -> "Updating\u2026"
+        StatusBadgeType.UPDATING -> "Updating…"
         StatusBadgeType.OFFLINE -> "Offline"
         StatusBadgeType.NONE -> return
     }
@@ -127,7 +122,7 @@ fun StatusPillBadge(badge: StatusBadgeType) {
     Box(
         modifier = GlanceModifier
             .fillMaxWidth()
-            .cornerRadius(8.dp)
+            .cornerRadius(10.dp)
             .background(Color(0xCC000000.toInt()))
             .padding(horizontal = 6.dp, vertical = 3.dp),
         contentAlignment = Alignment.Center
@@ -135,7 +130,7 @@ fun StatusPillBadge(badge: StatusBadgeType) {
         Text(
             text = text,
             style = TextStyle(
-                color = ColorProvider(Color.White),
+                color = ColorProvider(WidgetTheme.TextPrimary),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
@@ -151,20 +146,21 @@ fun StatusPillBadge(badge: StatusBadgeType) {
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
-fun InlineErrorBanner(message: String, textColor: Color = Color.White) {
+fun InlineErrorBanner(message: String) {
     Box(
         modifier = GlanceModifier
             .fillMaxWidth()
-            .cornerRadius(8.dp)
-            .background(Color(0xCC_B00020.toInt()))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .cornerRadius(12.dp)
+            .background(WidgetTheme.ErrorSurface)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         Text(
             text = message,
             style = TextStyle(
-                color = ColorProvider(textColor),
-                fontSize = 11.sp
+                color = ColorProvider(WidgetTheme.TextPrimary),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
             ),
             maxLines = 2
         )
@@ -176,19 +172,19 @@ fun InlineErrorBanner(message: String, textColor: Color = Color.White) {
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
-fun PermissionHintBanner(textSecondary: Color, chipBg: Color) {
+fun PermissionHintBanner() {
     Box(
         modifier = GlanceModifier
             .fillMaxWidth()
-            .cornerRadius(8.dp)
-            .background(chipBg)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .cornerRadius(12.dp)
+            .background(WidgetTheme.Glass)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         Text(
-            text = "Local control unavailable \u2014 grant network permission in Settings for faster response",
+            text = "Local control unavailable — grant network permission in Settings for faster response",
             style = TextStyle(
-                color = ColorProvider(textSecondary),
+                color = ColorProvider(WidgetTheme.TextSecondary),
                 fontSize = 10.sp
             ),
             maxLines = 2
@@ -197,7 +193,7 @@ fun PermissionHintBanner(textSecondary: Color, chipBg: Color) {
 }
 
 // ──────────────────────────────────────────────
-// Static Progress Bar (Task 3.5)
+// Static Progress Bar
 // ──────────────────────────────────────────────
 
 /**
@@ -212,26 +208,20 @@ fun PermissionHintBanner(textSecondary: Color, chipBg: Color) {
  * The bitmap is created at the device's native density for crisp rendering
  * and stretched to fill the available width via [ContentScale.FillBounds].
  *
- * Available in Half + Full size layouts (not Mini).
- *
  * @param elapsedMs Current playback position in milliseconds.
  * @param durationMs Total track duration in milliseconds.
- * @param accentColor The fill color for the elapsed portion (vibrant swatch).
- * @param trackColor The background color for the unfilled track.
  * @param barHeight Height of the progress bar (default 4dp).
  * @param showTimeLabels Whether to show elapsed/remaining time labels.
- * @param timeLabelColor Color for the time labels.
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
 fun StaticProgressBar(
     elapsedMs: Long,
     durationMs: Long,
-    accentColor: Color,
-    trackColor: Color,
+    fillColor: Color = WidgetTheme.TextPrimary,
+    trackColor: Color = WidgetTheme.ProgressTrack,
     barHeight: Dp = 4.dp,
-    showTimeLabels: Boolean = false,
-    timeLabelColor: Color = Color(0xFFB0B0C0)
+    showTimeLabels: Boolean = false
 ) {
     // Guard: don't render if no valid duration
     if (durationMs <= 0L) return
@@ -246,7 +236,7 @@ fun StaticProgressBar(
         widthPx = (600 * density).toInt(), // wide enough for crisp rendering
         heightPx = heightPx,
         fraction = fraction,
-        fillColorArgb = accentColor.toArgb(),
+        fillColorArgb = fillColor.toArgb(),
         trackColorArgb = trackColor.toArgb()
     )
 
@@ -262,21 +252,23 @@ fun StaticProgressBar(
 
         // Time labels (elapsed / remaining)
         if (showTimeLabels) {
-            Spacer(modifier = GlanceModifier.height(4.dp))
+            Spacer(modifier = GlanceModifier.height(3.dp))
             Row(modifier = GlanceModifier.fillMaxWidth()) {
                 Text(
                     text = formatDuration(elapsedMs),
                     style = TextStyle(
-                        color = ColorProvider(timeLabelColor),
-                        fontSize = 10.sp
+                        color = ColorProvider(WidgetTheme.TextTertiary),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 )
                 Spacer(modifier = GlanceModifier.defaultWeight())
                 Text(
                     text = "-${formatDuration(durationMs - elapsedMs)}",
                     style = TextStyle(
-                        color = ColorProvider(timeLabelColor),
-                        fontSize = 10.sp
+                        color = ColorProvider(WidgetTheme.TextTertiary),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 )
             }
@@ -289,12 +281,6 @@ fun StaticProgressBar(
  *
  * The bar consists of a rounded-rect track background with a
  * proportionally-filled rounded-rect foreground overlay.
- *
- * @param widthPx Total width in pixels (rendered wide for crisp scaling).
- * @param heightPx Height in pixels.
- * @param fraction Fill fraction (0.0 to 1.0).
- * @param fillColorArgb ARGB int for the filled portion.
- * @param trackColorArgb ARGB int for the unfilled track.
  */
 private fun renderProgressBarBitmap(
     widthPx: Int,

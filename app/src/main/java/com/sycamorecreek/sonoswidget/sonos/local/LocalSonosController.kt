@@ -225,9 +225,9 @@ class LocalSonosController(
 
     /** Start playback of a favorite. Invoke on the group coordinator. */
     suspend fun playFavorite(
-        ip: String, port: Int = 1400, uri: String, metadata: String
+        ip: String, port: Int = 1400, uri: String, metadata: String, coordinatorUuid: String?
     ): Boolean =
-        controlActions.playFavorite(ip, port, uri, metadata)
+        controlActions.playFavorite(ip, port, uri, metadata, coordinatorUuid)
 
     /** Add a speaker to a group by targeting the coordinator's UUID. */
     suspend fun addToGroup(ip: String, port: Int = 1400, coordinatorUuid: String): Boolean =
