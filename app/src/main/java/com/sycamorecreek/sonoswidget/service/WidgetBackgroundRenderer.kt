@@ -18,6 +18,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.StandardCopyOption
 
 /**
  * Renders the immersive widget background: the current album art blurred,
@@ -74,9 +77,11 @@ object WidgetBackgroundRenderer {
 
             try {
                 val bg = render(art)
-                FileOutputStream(file).use { out ->
+                val temp = File(file.parentFile, "${file.name}.tmp")
+                FileOutputStream(temp).use { out ->
                     bg.compress(Bitmap.CompressFormat.WEBP_LOSSY, 85, out)
                 }
+                moveCompletedFile(temp, file)
                 lastRenderedUrl = artUrl
                 diskCacheBitmap = bg
                 diskCacheStamp = file.lastModified()
@@ -271,4 +276,13 @@ object WidgetBackgroundRenderer {
     }
 
     private fun bgFile(context: Context): File = File(context.filesDir, BG_FILENAME)
+
+    private fun moveCompletedFile(temp: File, destination: File) {
+        try {
+            Files.move(temp.toPath(), destination.toPath(),
+                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(temp.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
 }

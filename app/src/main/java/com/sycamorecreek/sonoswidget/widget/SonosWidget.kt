@@ -44,11 +44,6 @@ class SonosWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         provideContent {
-            // Load bitmaps inside provideContent so they re-read from disk
-            // on every recomposition (track changes write new files to disk).
-            val albumArt: Bitmap? = AlbumArtLoader.loadFromDisk(context)
-            val background: Bitmap? = WidgetBackgroundRenderer.loadFromDisk(context)
-
             // Read serialized state from Glance Preferences
             val prefs = currentState<Preferences>()
             val stateJson = prefs[WidgetStateStore.STATE_KEY]
@@ -57,6 +52,15 @@ class SonosWidget : GlanceAppWidget() {
             } else {
                 SonosWidgetState() // Default empty state on first render
             }
+
+            // Artwork is a separately refreshed enrichment. Do not expose the
+            // previous track's file while the new track's art is still loading.
+            val albumArt: Bitmap? = if (state.artworkVersion != null) {
+                AlbumArtLoader.loadFromDisk(context)
+            } else null
+            val background: Bitmap? = if (state.artworkVersion != null) {
+                WidgetBackgroundRenderer.loadFromDisk(context)
+            } else null
 
             val size = LocalSize.current
             when {

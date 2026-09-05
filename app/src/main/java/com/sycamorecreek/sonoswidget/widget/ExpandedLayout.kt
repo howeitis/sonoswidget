@@ -55,10 +55,15 @@ fun ExpandedLayout(
     val showRoomSelector = prefs[androidx.datastore.preferences.core.booleanPreferencesKey("show_room_selector")] ?: false
 
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
-    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating
+    val isSwitchingRoom = state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
+    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating || isSwitchingRoom
     val hasTrack = state.currentTrack.name.isNotBlank()
     val palette = state.colorPalette
     val accent = WidgetTheme.accent(palette)
+    // Keep one bounded secondary surface. Queue is most useful while music is
+    // active; favorites are the useful idle affordance when playback stops.
+    val showFavoritesAsSecondary = state.playbackState != PlaybackState.PLAYING &&
+        state.favorites.isNotEmpty() && state.capabilities.canPlayFavorites
 
     ImmersiveSurface(background = background, palette = palette) {
         Column(
@@ -69,7 +74,7 @@ fun ExpandedLayout(
             // ── Group 1: banner + header + room selector ──
             Column(modifier = GlanceModifier.fillMaxWidth()) {
                 if (state.errorMessage != null) {
-                    InlineErrorBanner(state.errorMessage)
+                    InlineErrorBanner(state.errorMessage, actionRunCallback<RefreshStatusAction>())
                     Spacer(modifier = GlanceModifier.height(8.dp))
                 }
                 HeaderRow(state, controlsDisabled)
@@ -85,7 +90,7 @@ fun ExpandedLayout(
             Column(modifier = GlanceModifier.fillMaxWidth()) {
                 NowPlayingHero(state, albumArt, controlsDisabled, hasTrack)
 
-                if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
+                if (hasTrack && !controlsDisabled && state.capabilities.canSeek && state.currentTrack.durationMs > 0L) {
                     Spacer(modifier = GlanceModifier.height(12.dp))
                     Row(
                         modifier = GlanceModifier.fillMaxWidth(),
@@ -126,43 +131,27 @@ fun ExpandedLayout(
 
             Spacer(modifier = GlanceModifier.height(12.dp))
 
-            // ── Group 4: speakers + favorites + queue header ──
+            // ── Group 4: one bounded secondary section ──
             Column(modifier = GlanceModifier.fillMaxWidth()) {
-                SpeakerGroupingSection(state, controlsDisabled, palette)
-
-                if (state.favorites.isNotEmpty()) {
-                    Spacer(modifier = GlanceModifier.height(8.dp))
+                if (showFavoritesAsSecondary) {
                     FavoritesSection(state, controlsDisabled)
-                }
-
-                Spacer(modifier = GlanceModifier.height(8.dp))
-                SectionHeader(
-                    title = if (state.queue.isEmpty()) "Up Next"
-                        else "Up Next · ${state.queue.size}"
-                )
-                Spacer(modifier = GlanceModifier.height(4.dp))
-            }
-
-            // ── Group 5: queue — absorbs all remaining height ──
-            if (state.queue.isEmpty()) {
-                Box(
-                    modifier = GlanceModifier.fillMaxWidth().defaultWeight(),
-                    contentAlignment = Alignment.TopStart
-                ) {
-                    Text(
-                        text = "Queue is empty",
-                        style = TextStyle(
-                            color = ColorProvider(WidgetTheme.TextTertiary),
-                            fontSize = 12.sp
-                        )
+                } else {
+                    SectionHeader(
+                        title = if (state.queue.isEmpty()) "Up Next" else "Up Next · ${state.queue.size}"
                     )
-                }
-            } else {
-                LazyColumn(
-                    modifier = GlanceModifier.fillMaxWidth().defaultWeight()
-                ) {
-                    items(state.queue.take(20)) { item ->
-                        QueueItemRow(item)
+                    Spacer(modifier = GlanceModifier.height(4.dp))
+                    if (state.queue.isEmpty()) {
+                        Text(
+                            text = "Queue is empty",
+                            style = TextStyle(
+                                color = ColorProvider(WidgetTheme.TextTertiary),
+                                fontSize = 12.sp
+                            )
+                        )
+                    } else {
+                        // A bounded list prevents secondary content from pushing
+                        // transport or volume outside the offered widget size.
+                        state.queue.take(3).forEach { item -> QueueItemRow(item) }
                     }
                 }
             }
@@ -339,7 +328,7 @@ private fun TransportControlsBar(
             resId = R.drawable.ic_shuffle,
             contentDescription = shuffleLabel,
             action = actionRunCallback<ToggleShuffleAction>(),
-            enabled = !controlsDisabled,
+            enabled = !controlsDisabled && state.capabilities.canShuffle,
             boxSize = 44.dp,
             iconSize = 20.dp,
             tint = if (state.shuffleEnabled) accent else WidgetTheme.TextTertiary
@@ -351,7 +340,7 @@ private fun TransportControlsBar(
             resId = R.drawable.ic_skip_previous,
             contentDescription = "Previous track",
             action = actionRunCallback<PreviousTrackAction>(),
-            enabled = !controlsDisabled,
+            enabled = !controlsDisabled && state.capabilities.canPrevious,
             boxSize = 48.dp,
             iconSize = 28.dp
         )
@@ -360,7 +349,7 @@ private fun TransportControlsBar(
 
         PlayPauseButton(
             isPlaying = state.playbackState == PlaybackState.PLAYING,
-            enabled = !controlsDisabled,
+            enabled = !controlsDisabled && state.capabilities.canPlayPause,
             action = actionRunCallback<PlayPauseAction>(),
             size = 60.dp,
             iconSize = 30.dp
@@ -372,7 +361,7 @@ private fun TransportControlsBar(
             resId = R.drawable.ic_skip_next,
             contentDescription = "Next track",
             action = actionRunCallback<NextTrackAction>(),
-            enabled = !controlsDisabled,
+            enabled = !controlsDisabled && state.capabilities.canNext,
             boxSize = 48.dp,
             iconSize = 28.dp
         )
@@ -384,7 +373,7 @@ private fun TransportControlsBar(
                 else R.drawable.ic_repeat,
             contentDescription = repeatLabel,
             action = actionRunCallback<CycleRepeatAction>(),
-            enabled = !controlsDisabled,
+            enabled = !controlsDisabled && state.capabilities.canRepeat,
             boxSize = 44.dp,
             iconSize = 20.dp,
             tint = if (state.repeatMode != RepeatMode.NONE) accent else WidgetTheme.TextTertiary
@@ -418,7 +407,7 @@ private fun VolumeRow(
                 resId = R.drawable.ic_volume_down,
                 contentDescription = "Decrease volume",
                 action = actionRunCallback<VolumeDownAction>(),
-                enabled = !controlsDisabled,
+                enabled = !controlsDisabled && state.capabilities.canChangeVolume,
                 boxSize = 40.dp,
                 iconSize = 18.dp,
                 tint = WidgetTheme.TextSecondary
@@ -440,7 +429,7 @@ private fun VolumeRow(
                 resId = R.drawable.ic_volume_up,
                 contentDescription = "Increase volume",
                 action = actionRunCallback<VolumeUpAction>(),
-                enabled = !controlsDisabled,
+                enabled = !controlsDisabled && state.capabilities.canChangeVolume,
                 boxSize = 40.dp,
                 iconSize = 18.dp,
                 tint = WidgetTheme.TextSecondary
@@ -453,7 +442,7 @@ private fun VolumeRow(
             resId = if (state.volumeMuted) R.drawable.ic_volume_off else R.drawable.ic_volume_up,
             contentDescription = if (state.volumeMuted) "Unmute" else "Mute",
             action = actionRunCallback<ToggleMuteAction>(),
-            enabled = !controlsDisabled,
+            enabled = !controlsDisabled && state.capabilities.canMute,
             boxSize = 40.dp,
             iconSize = 18.dp,
             tint = if (state.volumeMuted) WidgetTheme.TextPrimary else WidgetTheme.TextTertiary,

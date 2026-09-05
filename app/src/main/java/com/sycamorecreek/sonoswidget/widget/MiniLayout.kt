@@ -24,7 +24,7 @@ import com.sycamorecreek.sonoswidget.R
  * Mini (~240x80dp) immersive widget layout for the lock screen and
  * hyper-compact grid placements.
  *
- * Single row: album art thumbnail, track title + artist, play/pause and
+ * Single row: album art thumbnail, track title + room, play/pause and
  * next controls. Shares the "glass on art" design system with the larger
  * layouts via [ImmersiveSurface] and [WidgetTheme].
  */
@@ -36,7 +36,8 @@ fun MiniLayout(
     background: Bitmap? = null
 ) {
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
-    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating
+    val isSwitchingRoom = state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
+    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating || isSwitchingRoom
     val hasTrack = state.currentTrack.name.isNotBlank()
 
     ImmersiveSurface(background = background, palette = state.colorPalette) {
@@ -77,9 +78,11 @@ fun MiniLayout(
                 Text(
                     text = when {
                         isDisconnected && state.isReconnecting -> "Reconnecting…"
+                        isSwitchingRoom -> "Switching room…"
                         isDisconnected -> "Check Wi-Fi connection"
+                        state.activeZone.displayName.isNotBlank() -> state.activeZone.displayName
                         state.currentTrack.artist.isNotBlank() -> state.currentTrack.artist
-                        else -> state.activeZone.displayName.ifBlank { "Sonos" }
+                        else -> "Sonos"
                     },
                     style = TextStyle(
                         color = ColorProvider(WidgetTheme.TextSecondary),
@@ -94,7 +97,7 @@ fun MiniLayout(
 
             PlayPauseButton(
                 isPlaying = state.playbackState == PlaybackState.PLAYING,
-                enabled = !controlsDisabled,
+                enabled = !controlsDisabled && state.capabilities.canPlayPause,
                 action = actionRunCallback<PlayPauseAction>(),
                 size = 40.dp,
                 iconSize = 20.dp
@@ -106,7 +109,7 @@ fun MiniLayout(
                 resId = R.drawable.ic_skip_next,
                 contentDescription = "Next track",
                 action = actionRunCallback<NextTrackAction>(),
-                enabled = !controlsDisabled,
+                enabled = !controlsDisabled && state.capabilities.canNext,
                 boxSize = 40.dp,
                 iconSize = 22.dp
             )

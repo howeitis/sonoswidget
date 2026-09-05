@@ -146,17 +146,21 @@ fun StatusPillBadge(badge: StatusBadgeType) {
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
-fun InlineErrorBanner(message: String) {
+fun InlineErrorBanner(
+    message: String,
+    action: androidx.glance.action.Action? = null
+) {
+    val baseModifier = GlanceModifier
+        .fillMaxWidth()
+        .cornerRadius(12.dp)
+        .background(WidgetTheme.ErrorSurface)
+        .padding(horizontal = 12.dp, vertical = 6.dp)
     Box(
-        modifier = GlanceModifier
-            .fillMaxWidth()
-            .cornerRadius(12.dp)
-            .background(WidgetTheme.ErrorSurface)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = if (action == null) baseModifier else baseModifier.clickable(action),
         contentAlignment = Alignment.CenterStart
     ) {
         Text(
-            text = message,
+            text = if (action == null) message else "$message. Tap to check status.",
             style = TextStyle(
                 color = ColorProvider(WidgetTheme.TextPrimary),
                 fontSize = 11.sp,

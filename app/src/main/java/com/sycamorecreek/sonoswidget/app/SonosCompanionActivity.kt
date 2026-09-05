@@ -123,6 +123,7 @@ class SonosCompanionActivity : ComponentActivity() {
         private const val TAG = "SonosCompanionActivity"
         private const val SONOS_S2_PACKAGE = "com.sonos.acr2"
         private const val SONOS_S1_PACKAGE = "com.sonos.acr"
+        const val EXTRA_SONOS_APP_UNAVAILABLE = "sonos_app_unavailable"
     }
 
     private lateinit var tokenStore: TokenStore
@@ -140,6 +141,7 @@ class SonosCompanionActivity : ComponentActivity() {
     private val ipTestResults = mutableStateMapOf<String, Boolean?>()
     private var defaultZoneName by mutableStateOf<String?>(null)
     private var defaultZoneId by mutableStateOf<String?>(null)
+    private var roomFollowMode by mutableStateOf(SonosPreferences.RoomFollowMode.STAY_WITH_ROOM)
     private var preferredService by mutableStateOf<String?>(null)
     private var cacheSizeBytes by mutableLongStateOf(0L)
 
@@ -213,6 +215,7 @@ class SonosCompanionActivity : ComponentActivity() {
                             scanMessage = scanMessage,
                             onScan = ::scanForSpeakers,
                             onOpenSonos = ::openSonosApp,
+                            onGetSonos = ::openSonosStore,
                             manualIps = manualIps,
                             ipTestResults = ipTestResults,
                             onAddIp = ::addManualIp,
@@ -220,6 +223,8 @@ class SonosCompanionActivity : ComponentActivity() {
                             onTestIp = ::testManualIp,
                             defaultZoneId = defaultZoneId,
                             defaultZoneName = defaultZoneName,
+                            roomFollowMode = roomFollowMode,
+                            onRoomFollowModeChange = ::updateRoomFollowMode,
                             onSelectDefaultZone = ::selectDefaultZone,
                             onClearDefaultZone = ::clearDefaultZone,
                             preferredService = preferredService,
@@ -252,6 +257,9 @@ class SonosCompanionActivity : ComponentActivity() {
     // ──────────────────────────────────────────────
 
     private fun handleIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_SONOS_APP_UNAVAILABLE, false) == true) {
+            scanMessage = "Sonos isn't installed or couldn't be opened. Get it below."
+        }
         val data = intent?.data ?: return
 
         val isHttpsCallback = data.scheme == "https" && data.host == "sycamorecreekconsulting.com" && data.path == "/callback"
@@ -349,9 +357,11 @@ class SonosCompanionActivity : ComponentActivity() {
             manualIps.clear()
             manualIps.addAll(ips)
 
-            val zone = withContext(Dispatchers.IO) { preferences.getDefaultZone() }
+            val roomPreferences = withContext(Dispatchers.IO) { preferences.getRoomFollowPreferences() }
+            val zone = roomPreferences.target
             defaultZoneId = zone?.id
             defaultZoneName = zone?.name
+            roomFollowMode = roomPreferences.mode
 
             preferredService = withContext(Dispatchers.IO) { preferences.getPreferredService() }
 
@@ -422,14 +432,28 @@ class SonosCompanionActivity : ComponentActivity() {
                 Log.w(TAG, "Failed to launch Sonos app", e)
             }
         }
-        // Not installed — offer the Play Store listing
+        // The widget opens this companion explanation when unavailable. The
+        // in-app button below deliberately distinguishes "Get Sonos" from a
+        // normal app launch.
+        Log.w(TAG, "Sonos app is unavailable")
+    }
+
+    private fun openSonosStore() {
         try {
             startActivity(
                 Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$SONOS_S2_PACKAGE"))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to open Play Store", e)
+            try {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://play.google.com/store/apps/details?id=$SONOS_S2_PACKAGE"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (webError: Exception) {
+                Log.e(TAG, "Failed to open Sonos store listing", webError)
+            }
         }
     }
 
@@ -478,6 +502,7 @@ class SonosCompanionActivity : ComponentActivity() {
     private fun selectDefaultZone(zone: Zone) {
         defaultZoneId = zone.id
         defaultZoneName = zone.displayName
+        roomFollowMode = SonosPreferences.RoomFollowMode.STAY_WITH_ROOM
         scope.launch(Dispatchers.IO) {
             preferences.saveDefaultZone(zone.id, zone.displayName)
         }
@@ -486,8 +511,25 @@ class SonosCompanionActivity : ComponentActivity() {
     private fun clearDefaultZone() {
         defaultZoneId = null
         defaultZoneName = null
+        roomFollowMode = SonosPreferences.RoomFollowMode.FOLLOW_PLAYING_MUSIC
         scope.launch(Dispatchers.IO) {
             preferences.clearDefaultZone()
+        }
+    }
+
+    private fun updateRoomFollowMode(mode: SonosPreferences.RoomFollowMode) {
+        roomFollowMode = mode
+        if (mode == SonosPreferences.RoomFollowMode.FOLLOW_PLAYING_MUSIC) {
+            defaultZoneId = null
+            defaultZoneName = null
+        }
+        scope.launch(Dispatchers.IO) {
+            val target = if (mode == SonosPreferences.RoomFollowMode.STAY_WITH_ROOM) {
+                defaultZoneId?.let { id ->
+                    SonosPreferences.DefaultZone(id, defaultZoneName.orEmpty())
+                }
+            } else null
+            preferences.saveRoomFollowPreferences(mode, target)
         }
     }
 
@@ -609,6 +651,7 @@ private fun CompanionScreen(
     scanMessage: String?,
     onScan: () -> Unit,
     onOpenSonos: () -> Unit,
+    onGetSonos: () -> Unit,
     manualIps: List<String>,
     ipTestResults: Map<String, Boolean?>,
     onAddIp: (String) -> Unit,
@@ -616,6 +659,8 @@ private fun CompanionScreen(
     onTestIp: (String) -> Unit,
     defaultZoneId: String?,
     defaultZoneName: String?,
+    roomFollowMode: SonosPreferences.RoomFollowMode,
+    onRoomFollowModeChange: (SonosPreferences.RoomFollowMode) -> Unit,
     onSelectDefaultZone: (Zone) -> Unit,
     onClearDefaultZone: () -> Unit,
     preferredService: String?,
@@ -653,7 +698,7 @@ private fun CompanionScreen(
         Spacer(modifier = Modifier.height(20.dp))
 
         // ── Now Playing hero ──
-        NowPlayingCard(state = state, onOpenSonos = onOpenSonos)
+        NowPlayingCard(state = state, onOpenSonos = onOpenSonos, onGetSonos = onGetSonos)
 
         Spacer(modifier = Modifier.height(14.dp))
 
@@ -736,6 +781,35 @@ private fun CompanionScreen(
 
         // ── Speakers ──
         SectionCard(title = "Speakers") {
+            Text(
+                text = "Widget room behavior",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Stay with a selected room, or automatically follow the room that is playing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(
+                    onClick = { onRoomFollowModeChange(SonosPreferences.RoomFollowMode.STAY_WITH_ROOM) },
+                    label = { Text("Stay with room") },
+                    leadingIcon = if (roomFollowMode == SonosPreferences.RoomFollowMode.STAY_WITH_ROOM) {
+                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null
+                )
+                AssistChip(
+                    onClick = { onRoomFollowModeChange(SonosPreferences.RoomFollowMode.FOLLOW_PLAYING_MUSIC) },
+                    label = { Text("Follow playing") },
+                    leadingIcon = if (roomFollowMode == SonosPreferences.RoomFollowMode.FOLLOW_PLAYING_MUSIC) {
+                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
             if (state.zones.isEmpty()) {
                 Text(
                     text = "No speakers discovered yet. Tap \"Scan for speakers\" or add the widget to your home screen.",
@@ -744,7 +818,9 @@ private fun CompanionScreen(
                 )
             } else {
                 Text(
-                    text = "Tap the star to make a room the widget's default",
+                    text = if (roomFollowMode == SonosPreferences.RoomFollowMode.STAY_WITH_ROOM)
+                        "Tap the star to choose the room where the widget stays"
+                    else "Following the room currently playing music",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -969,9 +1045,14 @@ private fun CompanionScreen(
 @Composable
 private fun NowPlayingCard(
     state: SonosWidgetState,
-    onOpenSonos: () -> Unit
+    onOpenSonos: () -> Unit,
+    onGetSonos: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val sonosInstalled = remember {
+        context.packageManager.getLaunchIntentForPackage("com.sonos.acr2") != null ||
+            context.packageManager.getLaunchIntentForPackage("com.sonos.acr") != null
+    }
     val hasTrack = state.currentTrack.name.isNotBlank()
     // Reload art from disk whenever the track's art URL changes
     val albumArt = remember(state.currentTrack.artUrl, state.lastUpdatedMs) {
@@ -1062,14 +1143,14 @@ private fun NowPlayingCard(
             ) {
                 PlaybackStateChip(state.playbackState, state.connectionMode)
                 Spacer(modifier = Modifier.weight(1f))
-                Button(onClick = onOpenSonos) {
+                Button(onClick = if (sonosInstalled) onOpenSonos else onGetSonos) {
                     Icon(
                         Icons.Default.PlayArrow,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Open Sonos")
+                    Text(if (sonosInstalled) "Open Sonos" else "Get Sonos")
                 }
             }
         }

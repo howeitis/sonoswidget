@@ -3,6 +3,7 @@ package com.sycamorecreek.sonoswidget.data
 import android.content.Context
 import android.util.Log
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -36,6 +37,22 @@ class SonosPreferences(private val context: Context) {
         private val KEY_DEFAULT_ZONE_ID = stringPreferencesKey("default_zone_id")
         private val KEY_DEFAULT_ZONE_NAME = stringPreferencesKey("default_zone_name")
         private val KEY_PREFERRED_SERVICE = stringPreferencesKey("preferred_service")
+        private val KEY_EXPERIENCE_PREFERENCES_VERSION = intPreferencesKey("experience_preferences_version")
+        private val KEY_ROOM_FOLLOW_MODE = stringPreferencesKey("room_follow_mode")
+        private val KEY_ROOM_TARGET_ID = stringPreferencesKey("room_target_id")
+        private val KEY_ROOM_TARGET_NAME = stringPreferencesKey("room_target_name")
+
+        private const val EXPERIENCE_PREFERENCES_VERSION = 1
+        private val LEGACY_KEY_NAMES = setOf(
+            "active_zone_id",
+            "active_zone_name",
+            "active_speaker_ip",
+            "active_speaker_port",
+            "manual_speaker_ips",
+            "default_zone_id",
+            "default_zone_name",
+            "preferred_service"
+        )
     }
 
     /**
@@ -138,6 +155,86 @@ class SonosPreferences(private val context: Context) {
 
     data class DefaultZone(val id: String, val name: String)
 
+    enum class RoomFollowMode {
+        STAY_WITH_ROOM,
+        FOLLOW_PLAYING_MUSIC
+    }
+
+    /** Versioned room-targeting preferences used by widget discovery and selection. */
+    data class RoomFollowPreferences(
+        val version: Int,
+        val mode: RoomFollowMode,
+        val target: DefaultZone?
+    )
+
+    /**
+     * Migrates the legacy default-zone behaviour exactly once. This deliberately
+     * reads before any new preference write: an empty legacy store is a new
+     * install, while an existing legacy store without a selected default follows
+     * playing music. DataStore read failures propagate so callers can retry; a
+     * failed read must never be mistaken for an empty store.
+     */
+    suspend fun migrateExperiencePreferences(
+        hasPersistedWidgetState: Boolean = false
+    ): RoomFollowPreferences {
+        val snapshot = context.sonosPrefsDataStore.data.first()
+        val explicitMode = parseRoomFollowMode(snapshot[KEY_ROOM_FOLLOW_MODE])
+        val version = snapshot[KEY_EXPERIENCE_PREFERENCES_VERSION] ?: 0
+        if (explicitMode != null && version >= EXPERIENCE_PREFERENCES_VERSION) {
+            return readRoomFollowPreferences(snapshot, explicitMode, version)
+        }
+
+        val legacyDefault = readLegacyDefaultZone(snapshot)
+        val hasLegacyEvidence = hasPersistedWidgetState || snapshot.asMap().keys.any {
+            it.name in LEGACY_KEY_NAMES
+        }
+        val mode = explicitMode ?: when {
+            legacyDefault != null -> RoomFollowMode.STAY_WITH_ROOM
+            hasLegacyEvidence -> RoomFollowMode.FOLLOW_PLAYING_MUSIC
+            else -> RoomFollowMode.STAY_WITH_ROOM
+        }
+
+        context.sonosPrefsDataStore.edit { prefs ->
+            // Preserve an explicit choice if another writer made one between the
+            // snapshot and this atomic migration transaction.
+            val resolvedMode = parseRoomFollowMode(prefs[KEY_ROOM_FOLLOW_MODE]) ?: mode
+            prefs[KEY_ROOM_FOLLOW_MODE] = resolvedMode.name
+            prefs[KEY_EXPERIENCE_PREFERENCES_VERSION] = EXPERIENCE_PREFERENCES_VERSION
+
+            if (prefs[KEY_ROOM_TARGET_ID].isNullOrBlank() && legacyDefault != null) {
+                prefs[KEY_ROOM_TARGET_ID] = legacyDefault.id
+                prefs[KEY_ROOM_TARGET_NAME] = legacyDefault.name
+            }
+        }
+
+        val migrated = context.sonosPrefsDataStore.data.first()
+        val migratedMode = parseRoomFollowMode(migrated[KEY_ROOM_FOLLOW_MODE])
+            ?: error("Room-follow preference migration did not persist a mode")
+        return readRoomFollowPreferences(
+            migrated,
+            migratedMode,
+            migrated[KEY_EXPERIENCE_PREFERENCES_VERSION] ?: EXPERIENCE_PREFERENCES_VERSION
+        )
+    }
+
+    suspend fun getRoomFollowPreferences(): RoomFollowPreferences =
+        migrateExperiencePreferences()
+
+    /** Updates room-follow mode and its applicable room atomically. */
+    suspend fun saveRoomFollowPreferences(mode: RoomFollowMode, target: DefaultZone? = null) {
+        context.sonosPrefsDataStore.edit { prefs ->
+            prefs[KEY_EXPERIENCE_PREFERENCES_VERSION] = EXPERIENCE_PREFERENCES_VERSION
+            prefs[KEY_ROOM_FOLLOW_MODE] = mode.name
+            if (target == null) {
+                prefs.remove(KEY_ROOM_TARGET_ID)
+                prefs.remove(KEY_ROOM_TARGET_NAME)
+            } else {
+                prefs[KEY_ROOM_TARGET_ID] = target.id
+                prefs[KEY_ROOM_TARGET_NAME] = target.name
+            }
+        }
+    }
+
     suspend fun getDefaultZone(): DefaultZone? {
         val prefs = context.sonosPrefsDataStore.data.first()
         val id = prefs[KEY_DEFAULT_ZONE_ID] ?: return null
@@ -151,6 +248,10 @@ class SonosPreferences(private val context: Context) {
         context.sonosPrefsDataStore.edit { prefs ->
             prefs[KEY_DEFAULT_ZONE_ID] = id
             prefs[KEY_DEFAULT_ZONE_NAME] = name
+            prefs[KEY_EXPERIENCE_PREFERENCES_VERSION] = EXPERIENCE_PREFERENCES_VERSION
+            prefs[KEY_ROOM_FOLLOW_MODE] = RoomFollowMode.STAY_WITH_ROOM.name
+            prefs[KEY_ROOM_TARGET_ID] = id
+            prefs[KEY_ROOM_TARGET_NAME] = name
         }
         Log.d(TAG, "Saved default zone: $name ($id)")
     }
@@ -159,6 +260,10 @@ class SonosPreferences(private val context: Context) {
         context.sonosPrefsDataStore.edit { prefs ->
             prefs.remove(KEY_DEFAULT_ZONE_ID)
             prefs.remove(KEY_DEFAULT_ZONE_NAME)
+            prefs[KEY_EXPERIENCE_PREFERENCES_VERSION] = EXPERIENCE_PREFERENCES_VERSION
+            prefs[KEY_ROOM_FOLLOW_MODE] = RoomFollowMode.FOLLOW_PLAYING_MUSIC.name
+            prefs.remove(KEY_ROOM_TARGET_ID)
+            prefs.remove(KEY_ROOM_TARGET_NAME)
         }
         Log.d(TAG, "Cleared default zone")
     }
@@ -183,5 +288,25 @@ class SonosPreferences(private val context: Context) {
             prefs.remove(KEY_PREFERRED_SERVICE)
         }
         Log.d(TAG, "Cleared preferred service")
+    }
+
+    private fun parseRoomFollowMode(value: String?): RoomFollowMode? =
+        value?.let { encoded -> RoomFollowMode.entries.firstOrNull { it.name == encoded } }
+
+    private fun readLegacyDefaultZone(
+        prefs: androidx.datastore.preferences.core.Preferences
+    ): DefaultZone? {
+        val id = prefs[KEY_DEFAULT_ZONE_ID]?.takeIf { it.isNotBlank() } ?: return null
+        return DefaultZone(id, prefs[KEY_DEFAULT_ZONE_NAME].orEmpty())
+    }
+
+    private fun readRoomFollowPreferences(
+        prefs: androidx.datastore.preferences.core.Preferences,
+        mode: RoomFollowMode,
+        version: Int
+    ): RoomFollowPreferences {
+        val targetId = prefs[KEY_ROOM_TARGET_ID]?.takeIf { it.isNotBlank() }
+        val target = targetId?.let { DefaultZone(it, prefs[KEY_ROOM_TARGET_NAME].orEmpty()) }
+        return RoomFollowPreferences(version = version, mode = mode, target = target)
     }
 }

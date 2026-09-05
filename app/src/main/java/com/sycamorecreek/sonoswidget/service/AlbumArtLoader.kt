@@ -14,6 +14,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.StandardCopyOption
 
 /**
  * Loads album art from Sonos speakers using Coil's raw ImageLoader API.
@@ -39,7 +42,7 @@ object AlbumArtLoader {
     private const val DISK_CACHE_MAX_SIZE = 50L * 1024 * 1024 // 50 MB per PRD
 
     // Track the last URL to avoid redundant fetches
-    private var lastArtUrl: String? = null
+    private var lastArtKey: String? = null
     private var cachedBitmap: Bitmap? = null
 
     private var imageLoader: ImageLoader? = null
@@ -71,7 +74,8 @@ object AlbumArtLoader {
     suspend fun loadAndCache(
         context: Context,
         artUrl: String?,
-        speakerIp: String?
+        speakerIp: String?,
+        artworkVersion: String
     ): Bitmap? {
         if (artUrl.isNullOrBlank()) {
             clearCache(context)
@@ -79,17 +83,18 @@ object AlbumArtLoader {
         }
 
         // Skip if same URL as last time
-        if (artUrl == lastArtUrl && cachedBitmap != null) {
+        val resolvedUrl = resolveUrl(artUrl, speakerIp)
+        val cacheKey = "$artworkVersion|$resolvedUrl"
+        if (cacheKey == lastArtKey && cachedBitmap != null) {
             return cachedBitmap
         }
 
-        val resolvedUrl = resolveUrl(artUrl, speakerIp)
         Log.d(TAG, "Loading album art: raw='$artUrl' resolved='$resolvedUrl' speakerIp=$speakerIp")
 
         val bitmap = fetchBitmap(context, resolvedUrl)
         if (bitmap != null) {
             cachedBitmap = bitmap
-            lastArtUrl = artUrl
+            lastArtKey = cacheKey
             saveToDisk(context, bitmap)
             Log.d(TAG, "Album art cached: ${bitmap.width}x${bitmap.height}")
         } else {
@@ -123,7 +128,7 @@ object AlbumArtLoader {
      * Clears the cached album art (e.g., when switching tracks to one without art).
      */
     fun clearCache(context: Context) {
-        lastArtUrl = null
+        lastArtKey = null
         cachedBitmap = null
         val file = artFile(context)
         if (file.exists()) {
@@ -155,7 +160,7 @@ object AlbumArtLoader {
      */
     fun clearAllDiskCache(context: Context) {
         // Clear in-memory state
-        lastArtUrl = null
+        lastArtKey = null
         cachedBitmap = null
 
         // Clear Coil disk cache
@@ -234,9 +239,11 @@ object AlbumArtLoader {
     private suspend fun saveToDisk(context: Context, bitmap: Bitmap) = withContext(Dispatchers.IO) {
         try {
             val file = artFile(context)
-            FileOutputStream(file).use { out ->
+            val temp = File(file.parentFile, "${file.name}.tmp")
+            FileOutputStream(temp).use { out ->
                 bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, out)
             }
+            moveCompletedFile(temp, file)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save album art to disk", e)
         }
@@ -244,4 +251,13 @@ object AlbumArtLoader {
 
     private fun artFile(context: Context): File =
         File(context.filesDir, ART_FILENAME)
+
+    private fun moveCompletedFile(temp: File, destination: File) {
+        try {
+            Files.move(temp.toPath(), destination.toPath(),
+                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(temp.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
 }

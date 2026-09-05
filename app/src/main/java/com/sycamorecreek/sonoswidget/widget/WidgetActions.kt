@@ -2,11 +2,11 @@ package com.sycamorecreek.sonoswidget.widget
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.action.ActionCallback
+import com.sycamorecreek.sonoswidget.app.SonosCompanionActivity
 import com.sycamorecreek.sonoswidget.data.ActionDebouncer
 import com.sycamorecreek.sonoswidget.data.SonosRepository
 import com.sycamorecreek.sonoswidget.service.PlaybackService
@@ -50,6 +50,19 @@ private fun ensureServiceRunning(context: Context) {
     PlaybackService.start(context)
 }
 
+/** A launcher may dispatch an action from an older render; re-check its contract. */
+private fun canDispatch(repo: SonosRepository, supported: Boolean, action: String): Boolean {
+    val state = repo.widgetState.value
+    val unavailable = state.connectionMode == ConnectionMode.DISCONNECTED ||
+        state.isOffline || state.isRateLimited || state.isUpdating ||
+        state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
+    if (unavailable || !supported) {
+        Log.d(TAG, "$action ignored because its current capability is unavailable")
+        return false
+    }
+    return true
+}
+
 /** Parameter key for passing a zone ID to [SwitchZoneAction]. */
 val ZONE_ID_KEY = ActionParameters.Key<String>("zone_id")
 
@@ -72,6 +85,7 @@ class PlayPauseAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPlayPause, "Play/pause")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.PLAY_PAUSE)
         } else {
@@ -95,6 +109,7 @@ class NextTrackAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canNext, "Next")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.NEXT)
         } else {
@@ -118,6 +133,7 @@ class PreviousTrackAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPrevious, "Previous")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.PREVIOUS)
         } else {
@@ -145,6 +161,7 @@ class ToggleShuffleAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canShuffle, "Shuffle")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.TOGGLE_SHUFFLE)
         } else {
@@ -168,6 +185,7 @@ class CycleRepeatAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canRepeat, "Repeat")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.CYCLE_REPEAT)
         } else {
@@ -195,11 +213,11 @@ class VolumeUpAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playRamp(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canChangeVolume, "Volume up")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.VOLUME_UP)
         } else {
-            val currentVol = repo.widgetState.value.volume
-            repo.setVolume((currentVol + 5).coerceAtMost(100))
+            repo.adjustVolume(5)
         }
     }
 }
@@ -219,11 +237,11 @@ class VolumeDownAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playRamp(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canChangeVolume, "Volume down")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.VOLUME_DOWN)
         } else {
-            val currentVol = repo.widgetState.value.volume
-            repo.setVolume((currentVol - 5).coerceAtLeast(0))
+            repo.adjustVolume(-5)
         }
     }
 }
@@ -244,6 +262,7 @@ class ToggleMuteAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canMute, "Mute")) return
         repo.setMute(!repo.widgetState.value.volumeMuted)
     }
 }
@@ -269,6 +288,7 @@ class SeekBackAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canSeek, "Seek back")) return
         val track = repo.widgetState.value.currentTrack
         if (track.durationMs <= 0L) return
         val target = (track.elapsedMs - SEEK_STEP_MS).coerceAtLeast(0L)
@@ -290,6 +310,7 @@ class SeekForwardAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canSeek, "Seek forward")) return
         val track = repo.widgetState.value.currentTrack
         if (track.durationMs <= 0L) return
         val target = (track.elapsedMs + SEEK_STEP_MS).coerceAtMost(track.durationMs)
@@ -336,6 +357,7 @@ class SwitchZoneAction : ActionCallback {
         }
 
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.zones.any { it.id == zoneId }, "Room switch")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.SWITCH_ZONE, zoneId)
         } else {
@@ -374,6 +396,7 @@ class ToggleGroupAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canGroup, "Grouping")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.TOGGLE_GROUP, speakerUuid)
         } else {
@@ -397,6 +420,7 @@ class GroupAllAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canGroup, "Group all")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.GROUP_ALL)
         } else {
@@ -439,6 +463,7 @@ class JumpToQueueItemAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canViewQueue, "Queue playback")) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.JUMP_TO_TRACK, trackNr.toString())
         } else {
@@ -473,7 +498,9 @@ class PlayFavoriteAction : ActionCallback {
         Log.d(TAG, "PlayFavoriteAction triggered for $favoriteId")
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
-        SonosRepository.getInstance(context).playFavorite(favoriteId)
+        val repo = SonosRepository.getInstance(context)
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPlayFavorites, "Favorite playback")) return
+        repo.playFavorite(favoriteId)
     }
 }
 
@@ -485,8 +512,9 @@ class PlayFavoriteAction : ActionCallback {
  * Opens the Sonos app when the user taps album art.
  *
  * Attempts to launch the Sonos S2 app (com.sonos.acr2) first,
- * then falls back to the S1 app (com.sonos.acr), then to the
- * Play Store listing if neither is installed.
+ * then falls back to the S1 app (com.sonos.acr). If neither is available,
+ * it opens the companion explanation; only its explicit Get Sonos action
+ * opens a store listing.
  *
  * Not debounced — this is a navigation action, not a speaker command.
  */
@@ -495,9 +523,6 @@ class OpenSonosAppAction : ActionCallback {
     companion object {
         private const val SONOS_S2_PACKAGE = "com.sonos.acr2"
         private const val SONOS_S1_PACKAGE = "com.sonos.acr"
-        private const val PLAY_STORE_URI = "market://details?id=$SONOS_S2_PACKAGE"
-        private const val PLAY_STORE_WEB =
-            "https://play.google.com/store/apps/details?id=$SONOS_S2_PACKAGE"
     }
 
     override suspend fun onAction(
@@ -511,10 +536,7 @@ class OpenSonosAppAction : ActionCallback {
         val launched = tryLaunchPackage(context, SONOS_S2_PACKAGE)
             || tryLaunchPackage(context, SONOS_S1_PACKAGE)
 
-        if (!launched) {
-            Log.d(TAG, "Sonos app not installed — opening Play Store")
-            openPlayStore(context)
-        }
+        if (!launched) openCompanionExplanation(context)
     }
 
     private fun tryLaunchPackage(context: Context, packageName: String): Boolean {
@@ -533,23 +555,14 @@ class OpenSonosAppAction : ActionCallback {
         return false
     }
 
-    private fun openPlayStore(context: Context) {
+    private fun openCompanionExplanation(context: Context) {
         try {
-            // Try market:// URI first (opens Play Store app)
-            val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse(PLAY_STORE_URI)).apply {
+            context.startActivity(Intent(context, SonosCompanionActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(marketIntent)
+                putExtra(SonosCompanionActivity.EXTRA_SONOS_APP_UNAVAILABLE, true)
+            })
         } catch (e: Exception) {
-            // Fallback to web Play Store
-            try {
-                val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(PLAY_STORE_WEB)).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(webIntent)
-            } catch (e2: Exception) {
-                Log.e(TAG, "Failed to open Play Store", e2)
-            }
+            Log.e(TAG, "Failed to open companion explanation", e)
         }
     }
 }
@@ -566,6 +579,20 @@ class ToggleRoomSelectorAction : ActionCallback {
             prefs[key] = !current
         }
         SonosWidget().update(context, glanceId)
+    }
+}
+
+/** Reconciles state after a command outcome that could not be confirmed. */
+class RefreshStatusAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        ensureServiceRunning(context)
+        val repository = SonosRepository.getInstance(context)
+        if (!repository.isConnected) repository.discoverAndConnect()
+        repository.pollAndUpdate()
     }
 }
 

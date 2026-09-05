@@ -62,6 +62,43 @@ enum class StatusBadgeType {
     NONE, OFFLINE, RECONNECTING, RATE_LIMITED, UPDATING
 }
 
+/** A user-initiated operation tracked independently from device playback state. */
+enum class WidgetOperationType {
+    LOADING_FAVORITE, SWITCHING_ROOM, APPLYING_GROUPING, RECONNECTING, COMMAND
+}
+
+/**
+ * An operation may be acknowledged before a following refresh completes, or have
+ * an unknown outcome when a speaker connection times out after dispatch.
+ */
+enum class WidgetOperationPhase {
+    REQUESTED, ACKNOWLEDGED, UNKNOWN, FAILED
+}
+
+data class PendingWidgetOperation(
+    val id: String = "",
+    val type: WidgetOperationType = WidgetOperationType.COMMAND,
+    val targetId: String = "",
+    val affectedField: String = "",
+    val startedAtMs: Long = 0L,
+    val phase: WidgetOperationPhase = WidgetOperationPhase.REQUESTED
+)
+
+/** Operations that are meaningful for the currently selected source and connection. */
+data class WidgetCapabilities(
+    val canPlayPause: Boolean = false,
+    val canPrevious: Boolean = false,
+    val canNext: Boolean = false,
+    val canSeek: Boolean = false,
+    val canMute: Boolean = false,
+    val canChangeVolume: Boolean = false,
+    val canShuffle: Boolean = false,
+    val canRepeat: Boolean = false,
+    val canViewQueue: Boolean = false,
+    val canPlayFavorites: Boolean = false,
+    val canGroup: Boolean = false
+)
+
 data class SonosWidgetState(
     val playbackState: PlaybackState = PlaybackState.STOPPED,
     val currentTrack: Track = Track(),
@@ -76,10 +113,18 @@ data class SonosWidgetState(
     val shuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.NONE,
     val colorPalette: WidgetColorPalette = WidgetColorPalette(),
+    /** Identity of the artwork file currently safe to pair with [currentTrack]. */
+    val artworkVersion: String? = null,
     val isReconnecting: Boolean = false,
     val isRateLimited: Boolean = false,
     val isOffline: Boolean = false,
     val isUpdating: Boolean = false,
+    /** Pending intent is deliberately separate from playback and firmware state. */
+    val pendingOperations: List<PendingWidgetOperation> = emptyList(),
+    val capabilities: WidgetCapabilities = WidgetCapabilities(),
+    /** Time of the last successful essential speaker refresh, never an optimistic UI update. */
+    val lastEssentialRefreshMs: Long = 0L,
+    val isContentStale: Boolean = false,
     val errorMessage: String? = null,
     val showPermissionHint: Boolean = false,
     val offlineSpeakerIds: Set<String> = emptySet(),

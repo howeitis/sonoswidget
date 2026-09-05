@@ -5,7 +5,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceComposable
 import androidx.glance.GlanceModifier
-import androidx.glance.action.actionParametersOf
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
@@ -29,8 +28,9 @@ import com.sycamorecreek.sonoswidget.R
  * Half-size (4x2) immersive widget layout.
  *
  * Same "glass on art" design system as [ExpandedLayout], condensed:
- * album art left, track info + progress + transport right, and an optional
- * speaker-grouping chip row underneath when multiple zones exist.
+ * album art left, track info + progress + transport right. Group editing is
+ * intentionally kept out of this bounded layout; it belongs to the expanded
+ * "Play in…" surface where Apply/Cancel can be represented safely.
  *
  * Colors come from [WidgetTheme] — white-alpha glass over the blurred
  * album-art background so the widget stays legible on any artwork.
@@ -43,19 +43,10 @@ fun CompactLayout(
     background: Bitmap? = null
 ) {
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
-    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating
+    val isSwitchingRoom = state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
+    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating || isSwitchingRoom
     val hasTrack = state.currentTrack.name.isNotBlank()
     val palette = state.colorPalette
-
-    // Show zone chips when connected with 2+ zones:
-    // active group members + other coordinators available for grouping.
-    val activeGroupId = state.activeZone.groupId
-    val activeGroupMembers = state.zones.filter { it.groupId == activeGroupId }
-    val otherCoordinators = state.zones.filter {
-        it.groupId != activeGroupId && it.isGroupCoordinator
-    }
-    val allDisplayZones = activeGroupMembers + otherCoordinators
-    val showZoneChips = !controlsDisabled && allDisplayZones.size > 1
 
     ImmersiveSurface(background = background, palette = palette) {
         Column(
@@ -67,7 +58,7 @@ fun CompactLayout(
 
             // ── Inline error banner (auto-dismissed after 5s by service) ──
             if (state.errorMessage != null) {
-                InlineErrorBanner(state.errorMessage)
+                InlineErrorBanner(state.errorMessage, actionRunCallback<RefreshStatusAction>())
                 Spacer(modifier = GlanceModifier.height(6.dp))
             }
 
@@ -112,6 +103,8 @@ fun CompactLayout(
                         text = when {
                             state.isOffline -> "No internet and no local network"
                             state.isUpdating -> "Speaker is updating firmware…"
+                            isSwitchingRoom -> "Switching room…"
+                            state.pendingOperations.any { it.type == WidgetOperationType.LOADING_FAVORITE } -> "Preparing favorite…"
                             state.isRateLimited -> "Cloud API rate limited — retrying…"
                             isDisconnected && state.isReconnecting -> "Reconnecting…"
                             isDisconnected -> "Check Wi-Fi connection"
@@ -127,7 +120,7 @@ fun CompactLayout(
                     )
 
                     // ── Static progress bar ──
-                    if (hasTrack && !controlsDisabled && state.currentTrack.durationMs > 0L) {
+                    if (hasTrack && !controlsDisabled && state.capabilities.canSeek && state.currentTrack.durationMs > 0L) {
                         Spacer(modifier = GlanceModifier.height(6.dp))
                         StaticProgressBar(
                             elapsedMs = state.currentTrack.elapsedMs,
@@ -148,7 +141,7 @@ fun CompactLayout(
                             resId = R.drawable.ic_skip_previous,
                             contentDescription = "Previous track",
                             action = actionRunCallback<PreviousTrackAction>(),
-                            enabled = !controlsDisabled,
+                            enabled = !controlsDisabled && state.capabilities.canPrevious,
                             boxSize = 40.dp,
                             iconSize = 22.dp
                         )
@@ -157,7 +150,7 @@ fun CompactLayout(
 
                         PlayPauseButton(
                             isPlaying = state.playbackState == PlaybackState.PLAYING,
-                            enabled = !controlsDisabled,
+                            enabled = !controlsDisabled && state.capabilities.canPlayPause,
                             action = actionRunCallback<PlayPauseAction>(),
                             size = 40.dp,
                             iconSize = 20.dp
@@ -169,7 +162,7 @@ fun CompactLayout(
                             resId = R.drawable.ic_skip_next,
                             contentDescription = "Next track",
                             action = actionRunCallback<NextTrackAction>(),
-                            enabled = !controlsDisabled,
+                            enabled = !controlsDisabled && state.capabilities.canNext,
                             boxSize = 40.dp,
                             iconSize = 22.dp
                         )
@@ -189,80 +182,13 @@ fun CompactLayout(
                                     Spacer(modifier = GlanceModifier.width(4.dp))
                                 }
                                 Text(
-                                    text = if (showZoneChips) {
-                                        "${state.volume}%"
-                                    } else {
-                                        buildZoneLabel(state)
-                                    },
+                                    text = buildZoneLabel(state),
                                     style = TextStyle(
                                         color = ColorProvider(WidgetTheme.TextTertiary),
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Medium
                                     ),
                                     maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── Speaker grouping chip row (only with 2+ zones) ──
-            if (showZoneChips) {
-                Spacer(modifier = GlanceModifier.height(8.dp))
-
-                val items = mutableListOf<@androidx.compose.runtime.Composable () -> Unit>()
-                val visibleZones = allDisplayZones.take(5)
-
-                visibleZones.forEach { zone ->
-                    val isGrouped = zone.groupId == activeGroupId
-                    val isSpeakerOffline = zone.id in state.offlineSpeakerIds
-                    items.add {
-                        CompactSpeakerChip(zone, isGrouped, isSpeakerOffline, palette)
-                    }
-                }
-
-                if (otherCoordinators.isNotEmpty()) {
-                    items.add {
-                        GlassChip(
-                            text = "All",
-                            contentDescription = "Group all speakers",
-                            action = actionRunCallback<GroupAllAction>(),
-                            textColor = WidgetTheme.TextTertiary,
-                            fontSize = 10,
-                            horizontalPadding = 10.dp,
-                            verticalPadding = 5.dp
-                        )
-                    }
-                }
-
-                val rowSize = 3
-                val chunks = items.chunked(rowSize)
-
-                Column(modifier = GlanceModifier.fillMaxWidth()) {
-                    chunks.forEachIndexed { rowIndex, chunk ->
-                        if (rowIndex > 0) {
-                            Spacer(modifier = GlanceModifier.height(6.dp))
-                        }
-                        Row(
-                            modifier = GlanceModifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            chunk.forEachIndexed { index, itemComposable ->
-                                if (index > 0) {
-                                    Spacer(modifier = GlanceModifier.width(6.dp))
-                                }
-                                itemComposable()
-                            }
-
-                            if (rowIndex == chunks.lastIndex && allDisplayZones.size > 5) {
-                                Spacer(modifier = GlanceModifier.width(4.dp))
-                                Text(
-                                    text = "+${allDisplayZones.size - 5}",
-                                    style = TextStyle(
-                                        color = ColorProvider(WidgetTheme.TextTertiary),
-                                        fontSize = 10.sp
-                                    )
                                 )
                             }
                         }
@@ -277,44 +203,6 @@ fun CompactLayout(
             }
         }
     }
-}
-
-/**
- * A speaker grouping chip for the compact layout.
- * Grouped speakers show an accent-tinted glass fill; ungrouped are plain
- * glass. Offline speakers are dimmed and not tappable.
- */
-@GlanceComposable
-@androidx.compose.runtime.Composable
-private fun CompactSpeakerChip(
-    zone: Zone,
-    isGrouped: Boolean,
-    isSpeakerOffline: Boolean,
-    palette: WidgetColorPalette
-) {
-    val chipLabel = when {
-        isSpeakerOffline -> "${zone.displayName}, offline"
-        isGrouped -> "${zone.displayName}, grouped"
-        else -> "${zone.displayName}, ungrouped"
-    }
-    GlassChip(
-        text = zone.displayName.take(12),
-        contentDescription = chipLabel,
-        action = if (isSpeakerOffline) null else actionRunCallback<ToggleGroupAction>(
-            actionParametersOf(SPEAKER_UUID_KEY to zone.id)
-        ),
-        background = if (isGrouped && !isSpeakerOffline) WidgetTheme.accentGlass(palette)
-            else WidgetTheme.Glass,
-        textColor = when {
-            isSpeakerOffline -> WidgetTheme.Disabled
-            isGrouped -> WidgetTheme.TextPrimary
-            else -> WidgetTheme.TextSecondary
-        },
-        bold = isGrouped && !isSpeakerOffline,
-        fontSize = 10,
-        horizontalPadding = 10.dp,
-        verticalPadding = 5.dp
-    )
 }
 
 /**

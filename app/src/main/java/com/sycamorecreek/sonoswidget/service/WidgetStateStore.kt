@@ -1,6 +1,7 @@
 package com.sycamorecreek.sonoswidget.service
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.appwidget.GlanceAppWidgetManager
@@ -9,11 +10,15 @@ import com.sycamorecreek.sonoswidget.widget.ConnectionMode
 import com.sycamorecreek.sonoswidget.widget.Favorite
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
+import com.sycamorecreek.sonoswidget.widget.PendingWidgetOperation
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidget
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
 import com.sycamorecreek.sonoswidget.widget.Track
 import com.sycamorecreek.sonoswidget.widget.WidgetColorPalette
+import com.sycamorecreek.sonoswidget.widget.WidgetCapabilities
+import com.sycamorecreek.sonoswidget.widget.WidgetOperationPhase
+import com.sycamorecreek.sonoswidget.widget.WidgetOperationType
 import com.sycamorecreek.sonoswidget.widget.Zone
 import org.json.JSONArray
 import org.json.JSONObject
@@ -42,6 +47,7 @@ object WidgetStateStore {
      * 3. Calls update() to trigger provideGlance()
      */
     suspend fun pushState(context: Context, state: SonosWidgetState) {
+        val startedAtMs = SystemClock.elapsedRealtime()
         val json = serialize(state)
         val manager = GlanceAppWidgetManager(context)
         val glanceIds = manager.getGlanceIds(SonosWidget::class.java)
@@ -63,7 +69,11 @@ object WidgetStateStore {
             }
         }
 
-        Log.d(TAG, "Pushed state to ${glanceIds.size} widget(s): ${state.playbackState}")
+        Log.d(
+            TAG,
+            "Widget publication requested for ${glanceIds.size} instance(s) in " +
+                "${SystemClock.elapsedRealtime() - startedAtMs}ms; playback=${state.playbackState}"
+        )
     }
 
     // ──────────────────────────────────────────────
@@ -93,11 +103,18 @@ object WidgetStateStore {
             put("shuffleEnabled", state.shuffleEnabled)
             put("repeatMode", state.repeatMode.name)
             put("colorPalette", serializeColorPalette(state.colorPalette))
+            put("artworkVersion", state.artworkVersion ?: JSONObject.NULL)
             put("volumeMuted", state.volumeMuted)
             put("isReconnecting", state.isReconnecting)
             put("isRateLimited", state.isRateLimited)
             put("isOffline", state.isOffline)
             put("isUpdating", state.isUpdating)
+            put("pendingOperations", JSONArray().apply {
+                state.pendingOperations.forEach { put(serializeOperation(it)) }
+            })
+            put("capabilities", serializeCapabilities(state.capabilities))
+            put("lastEssentialRefreshMs", state.lastEssentialRefreshMs)
+            put("isContentStale", state.isContentStale)
             put("errorMessage", state.errorMessage ?: JSONObject.NULL)
             put("showPermissionHint", state.showPermissionHint)
             put("offlineSpeakerIds", JSONArray().apply {
@@ -133,11 +150,19 @@ object WidgetStateStore {
                     RepeatMode.NONE
                 },
                 colorPalette = deserializeColorPalette(obj.optJSONObject("colorPalette")),
+                artworkVersion = if (obj.isNull("artworkVersion")) null else obj.optString("artworkVersion"),
                 volumeMuted = obj.optBoolean("volumeMuted", false),
                 isReconnecting = obj.optBoolean("isReconnecting", false),
                 isRateLimited = obj.optBoolean("isRateLimited", false),
                 isOffline = obj.optBoolean("isOffline", false),
                 isUpdating = obj.optBoolean("isUpdating", false),
+                // Operations describe in-flight intent, not confirmed playback.
+                // A process restart cannot know whether the request reached the
+                // speaker, so reconciliation starts with no active operation.
+                pendingOperations = emptyList(),
+                capabilities = deserializeCapabilities(obj.optJSONObject("capabilities")),
+                lastEssentialRefreshMs = obj.optLong("lastEssentialRefreshMs", 0L),
+                isContentStale = obj.optBoolean("isContentStale", false),
                 errorMessage = if (obj.isNull("errorMessage")) null else obj.optString("errorMessage"),
                 showPermissionHint = obj.optBoolean("showPermissionHint", false),
                 offlineSpeakerIds = deserializeStringSet(obj.optJSONArray("offlineSpeakerIds")),
@@ -264,4 +289,66 @@ object WidgetStateStore {
             chipBackground = obj.optString("chipBackground", "#3E3E5E")
         )
     }
+
+    private fun serializeOperation(operation: PendingWidgetOperation): JSONObject = JSONObject().apply {
+        put("id", operation.id)
+        put("type", operation.type.name)
+        put("targetId", operation.targetId)
+        put("affectedField", operation.affectedField)
+        put("startedAtMs", operation.startedAtMs)
+        put("phase", operation.phase.name)
+    }
+
+    private fun deserializeOperations(arr: JSONArray?): List<PendingWidgetOperation> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).mapNotNull { index ->
+            val obj = arr.optJSONObject(index) ?: return@mapNotNull null
+            val id = obj.optString("id", "")
+            if (id.isBlank()) return@mapNotNull null
+            val type = enumOrNull<WidgetOperationType>(obj.optString("type")) ?: return@mapNotNull null
+            val phase = enumOrNull<WidgetOperationPhase>(obj.optString("phase")) ?: return@mapNotNull null
+            PendingWidgetOperation(
+                id = id,
+                type = type,
+                targetId = obj.optString("targetId", ""),
+                affectedField = obj.optString("affectedField", ""),
+                startedAtMs = obj.optLong("startedAtMs", 0L),
+                phase = phase
+            )
+        }
+    }
+
+    private fun serializeCapabilities(capabilities: WidgetCapabilities): JSONObject = JSONObject().apply {
+        put("canPlayPause", capabilities.canPlayPause)
+        put("canPrevious", capabilities.canPrevious)
+        put("canNext", capabilities.canNext)
+        put("canSeek", capabilities.canSeek)
+        put("canMute", capabilities.canMute)
+        put("canChangeVolume", capabilities.canChangeVolume)
+        put("canShuffle", capabilities.canShuffle)
+        put("canRepeat", capabilities.canRepeat)
+        put("canViewQueue", capabilities.canViewQueue)
+        put("canPlayFavorites", capabilities.canPlayFavorites)
+        put("canGroup", capabilities.canGroup)
+    }
+
+    private fun deserializeCapabilities(obj: JSONObject?): WidgetCapabilities {
+        if (obj == null) return WidgetCapabilities()
+        return WidgetCapabilities(
+            canPlayPause = obj.optBoolean("canPlayPause", false),
+            canPrevious = obj.optBoolean("canPrevious", false),
+            canNext = obj.optBoolean("canNext", false),
+            canSeek = obj.optBoolean("canSeek", false),
+            canMute = obj.optBoolean("canMute", false),
+            canChangeVolume = obj.optBoolean("canChangeVolume", false),
+            canShuffle = obj.optBoolean("canShuffle", false),
+            canRepeat = obj.optBoolean("canRepeat", false),
+            canViewQueue = obj.optBoolean("canViewQueue", false),
+            canPlayFavorites = obj.optBoolean("canPlayFavorites", false),
+            canGroup = obj.optBoolean("canGroup", false)
+        )
+    }
+
+    private inline fun <reified T : Enum<T>> enumOrNull(value: String): T? =
+        enumValues<T>().firstOrNull { it.name == value }
 }

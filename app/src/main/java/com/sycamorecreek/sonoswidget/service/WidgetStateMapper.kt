@@ -11,6 +11,7 @@ import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
 import com.sycamorecreek.sonoswidget.widget.Track
+import com.sycamorecreek.sonoswidget.widget.WidgetCapabilities
 import com.sycamorecreek.sonoswidget.widget.Zone
 
 /**
@@ -217,5 +218,39 @@ object WidgetStateMapper {
             repeat == RepeatMode.ONE -> "REPEAT_ONE"
             else -> "NORMAL"
         }
+    }
+
+    /**
+     * Derives control affordances from the current source and transport facts.
+     * UI code and callbacks consume this same contract so an old rendered widget
+     * cannot offer an operation which the repository no longer supports.
+     */
+    fun capabilitiesFor(
+        connectionMode: ConnectionMode,
+        track: Track,
+        currentSource: String,
+        hasQueue: Boolean,
+        hasFavorites: Boolean,
+        hasLocalGrouping: Boolean
+    ): WidgetCapabilities {
+        val connected = connectionMode != ConnectionMode.DISCONNECTED
+        val cloud = connectionMode == ConnectionMode.CLOUD
+        val isTv = currentSource == "TV"
+        val hasMedia = track.name.isNotBlank() || currentSource.isNotBlank()
+        val seekable = !isTv && track.durationMs > 0L
+
+        return WidgetCapabilities(
+            canPlayPause = connected && hasMedia,
+            canPrevious = connected && hasMedia && !isTv,
+            canNext = connected && hasMedia && !isTv,
+            canSeek = connected && seekable && !cloud,
+            canMute = connected && !cloud,
+            canChangeVolume = connected,
+            canShuffle = connected && hasQueue && !isTv,
+            canRepeat = connected && hasQueue && !isTv,
+            canViewQueue = connected && hasQueue && !cloud,
+            canPlayFavorites = connected && hasFavorites && !cloud,
+            canGroup = connected && hasLocalGrouping && !cloud
+        )
     }
 }

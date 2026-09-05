@@ -3,6 +3,7 @@ package com.sycamorecreek.sonoswidget.data
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.SystemClock
 import android.util.Log
 import com.sycamorecreek.sonoswidget.service.AlbumArtLoader
 import com.sycamorecreek.sonoswidget.service.ThemeExtractor
@@ -22,9 +23,12 @@ import com.sycamorecreek.sonoswidget.sonos.local.ZoneGroupMember
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
 import com.sycamorecreek.sonoswidget.widget.Favorite
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
+import com.sycamorecreek.sonoswidget.widget.PendingWidgetOperation
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
+import com.sycamorecreek.sonoswidget.widget.WidgetOperationType
+import com.sycamorecreek.sonoswidget.widget.WidgetOperationPhase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -34,6 +38,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -59,10 +65,6 @@ class SonosRepository private constructor(
     companion object {
         private const val TAG = "SonosRepository"
         private const val ZONE_REFRESH_INTERVAL_MS = 60_000L
-        // Room the single widget should land on at cold start when the user hasn't
-        // explicitly chosen a default zone in the companion app. Matched by room
-        // name (case-insensitive) against the zone group topology.
-        private const val DEFAULT_ZONE_NAME = "Living Room"
         // Play mode and current-source URI change rarely; no need to refetch every
         // 2-second poll. Throttle these auxiliary queries to limit SOAP traffic/battery.
         private const val METADATA_REFRESH_INTERVAL_MS = 15_000L
@@ -133,6 +135,8 @@ class SonosRepository private constructor(
     private var activeSpeakerIp: String? = null
     private var activeSpeakerPort: Int = 1400
     private var activeZoneId: String? = null
+    /** Increments for every explicit room intent, invalidating older callbacks. */
+    private var roomTargetGeneration: Long = 0L
 
     private var cachedZoneGroups: List<ZoneGroup>? = null
     private var lastZoneRefreshMs: Long = 0L
@@ -165,10 +169,14 @@ class SonosRepository private constructor(
     private var optimisticPlaybackUntilMs: Long = 0L
     private var optimisticVolume: Int? = null
     private var optimisticVolumeUntilMs: Long = 0L
+    /** Serializes relative volume intent so rapid widget callbacks cannot race. */
+    private val volumeIntentMutex = Mutex()
 
     // Palette extraction is expensive; only recompute when the art URL changes.
     private var lastPaletteArtUrl: String? = null
     private var cachedPalette: com.sycamorecreek.sonoswidget.widget.WidgetColorPalette? = null
+    /** The media identity currently represented by the shared artwork files. */
+    private var publishedArtworkVersion: String? = null
 
     // Error state tracking
     private var rateLimitedUntilMs: Long = 0L
@@ -242,6 +250,12 @@ class SonosRepository private constructor(
      * Returns true if any connection mode succeeded.
      */
     suspend fun discoverAndConnect(): Boolean {
+        // Must run before discovery or any new preference write so legacy installs
+        // retain their historical follow behaviour. Read failures intentionally
+        // propagate to the caller for a later retry rather than being treated as
+        // a fresh install.
+        preferences.migrateExperiencePreferences()
+
         // Clear stale error states on fresh discovery
         clearErrorStates()
 
@@ -344,21 +358,42 @@ class SonosRepository private constructor(
                 }?.members?.find { it.isCoordinator }
             } else null
 
-            // Verify the saved coordinator is reachable right now
+            val roomFollow = preferences.getRoomFollowPreferences()
+
+            // A saved target remains authoritative in stay mode. Follow mode only
+            // retains it when it is actively playing; otherwise another playing
+            // coordinator is eligible to become the shared target.
             val verifiedSavedCoordinator = if (savedCoordinator != null) {
                 val info = controller.getTransportInfo(savedCoordinator.ip, savedCoordinator.port)
-                if (info != null) savedCoordinator else null
+                if (info != null && (
+                        roomFollow.mode == SonosPreferences.RoomFollowMode.STAY_WITH_ROOM ||
+                            info.state == "PLAYING"
+                    )) savedCoordinator else null
             } else null
 
-            // 2. Fall back to user's default room or any playing coordinator
-            val bestCoordinator = verifiedSavedCoordinator
-                ?: resolvePreferredCoordinator(zoneGroups)
-                ?: findBestCoordinator(zoneGroups)
+            // Stay mode with an explicit target must never silently redirect to
+            // another room. Follow mode chooses the best playing coordinator.
+            val bestCoordinator = when {
+                roomFollow.mode == SonosPreferences.RoomFollowMode.STAY_WITH_ROOM &&
+                    roomFollow.target != null -> {
+                    resolvePreferredCoordinator(zoneGroups, roomFollow.target)
+                }
+                roomFollow.mode == SonosPreferences.RoomFollowMode.STAY_WITH_ROOM -> {
+                    verifiedSavedCoordinator
+                }
+                else -> verifiedSavedCoordinator ?: findBestCoordinator(zoneGroups)
+            }
             if (bestCoordinator != null) {
                 activeSpeakerIp = bestCoordinator.ip
                 activeSpeakerPort = bestCoordinator.port
                 activeZoneId = bestCoordinator.uuid
                 Log.d(TAG, "Step 1: Selected coordinator ${bestCoordinator.zoneName} @ ${bestCoordinator.ip}")
+            } else if (
+                roomFollow.mode == SonosPreferences.RoomFollowMode.STAY_WITH_ROOM &&
+                    roomFollow.target != null
+            ) {
+                Log.w(TAG, "Selected room '${roomFollow.target.name}' is unavailable; not redirecting")
+                return false
             } else {
                 // Fallback: redirect discovered speaker to its group coordinator
                 val coordinator = findCoordinator(zoneGroups, anySpeaker)
@@ -485,11 +520,12 @@ class SonosRepository private constructor(
         }
 
         // Drain debounced actions on reconnection (Task 3.4)
-        // Triggered when state transitions from isReconnecting → connected
+        // Never replay a command issued while disconnected. Older versions could
+        // leave process-local debounced actions behind; discard them on recovery.
         if (wasReconnecting && !_widgetState.value.isReconnecting
             && actionDebouncer.hasPendingActions
         ) {
-            drainDebouncedActions()
+            actionDebouncer.clear()
         }
 
         return result
@@ -515,7 +551,10 @@ class SonosRepository private constructor(
             val now2 = System.currentTimeMillis()
             if (stoppedSinceMs == 0L) {
                 stoppedSinceMs = now2
-            } else if (now2 - stoppedSinceMs >= STOPPED_RESCAN_THRESHOLD_MS) {
+            } else if (
+                preferences.getRoomFollowPreferences().mode == SonosPreferences.RoomFollowMode.FOLLOW_PLAYING_MUSIC &&
+                    now2 - stoppedSinceMs >= STOPPED_RESCAN_THRESHOLD_MS
+            ) {
                 Log.d(TAG, "Speaker STOPPED for ${(now2 - stoppedSinceMs) / 1000}s — scanning for playing coordinator")
                 stoppedSinceMs = now2 // Reset to wait another 30s before next scan
 
@@ -553,12 +592,6 @@ class SonosRepository private constructor(
 
         val currentTrackNum = positionInfo?.trackNum ?: 0
         val trackChanged = currentTrackNum != lastQueueTrackNum
-        if (trackChanged) {
-            lastQueueTrackNum = currentTrackNum
-            // Start browsing from current track position to get "up next" items
-            cachedQueue = controller.browseQueue(ip, port, startIndex = currentTrackNum, count = 20)
-            Log.d(TAG, "Queue refreshed: ${cachedQueue?.size ?: 0} item(s), startIndex=$currentTrackNum")
-        }
 
         // Play mode (shuffle/repeat) changes rarely — refetch on a slow cadence
         // rather than on every 2s poll cycle.
@@ -597,13 +630,9 @@ class SonosRepository private constructor(
         // already returned by pollPlaybackState.
         val groupVolume = if (grouped) controller.getGroupVolume(ip, port)?.volume else null
 
-        // Sonos Favorites — browsed on a slow cadence (rarely change).
-        if (cachedFavorites == null || now - lastFavoritesMs > FAVORITES_REFRESH_INTERVAL_MS) {
-            controller.browseFavorites(ip, port)?.let {
-                cachedFavorites = it
-                lastFavoritesMs = now
-            }
-        }
+        // Queue and favorites use the previous successful cache for the fast
+        // state publication below. Their SOAP browses happen after controls and
+        // playback have been made visible to the widget.
         val favorites = cachedFavorites?.map {
             Favorite(id = it.id, title = it.title, artUrl = it.albumArtUri)
         } ?: emptyList()
@@ -635,18 +664,70 @@ class SonosRepository private constructor(
             isRateLimited = System.currentTimeMillis() < rateLimitedUntilMs,
             showPermissionHint = false,
             errorMessage = expiredErrorMessage(),
-            offlineSpeakerIds = detectOfflineSpeakers()
+            offlineSpeakerIds = detectOfflineSpeakers(),
+            lastEssentialRefreshMs = now,
+            isContentStale = false
+        )
+
+        state = state.copy(
+            capabilities = WidgetStateMapper.capabilitiesFor(
+                connectionMode = activeConnectionMode,
+                track = state.currentTrack,
+                currentSource = currentSource,
+                hasQueue = queueItems.isNotEmpty(),
+                hasFavorites = favorites.isNotEmpty(),
+                hasLocalGrouping = cachedZoneGroups != null
+            )
         )
 
         if (groupVolume != null) {
             state = state.copy(volume = groupVolume)
         }
 
+        // Publish transport, room and controls before artwork I/O. A track change
+        // deliberately hides the prior cover until its own enrichment is ready.
+        val artworkVersion = artworkVersionFor(state)
+        state = state.copy(
+            artworkVersion = artworkVersion.takeIf { it == publishedArtworkVersion }
+        )
+        state = applyOptimisticOverrides(state)
+        _widgetState.value = state
+        WidgetStateStore.pushState(context, state)
+
+        if (trackChanged) {
+            lastQueueTrackNum = currentTrackNum
+            cachedQueue = controller.browseQueue(ip, port, startIndex = currentTrackNum, count = 20)
+            Log.d(TAG, "Queue refreshed: ${cachedQueue?.size ?: 0} item(s), startIndex=$currentTrackNum")
+        }
+        if (cachedFavorites == null || now - lastFavoritesMs > FAVORITES_REFRESH_INTERVAL_MS) {
+            controller.browseFavorites(ip, port)?.let {
+                cachedFavorites = it
+                lastFavoritesMs = now
+            }
+        }
+        val enrichedQueue = mapQueueItems(cachedQueue, currentTrackNum)
+        val enrichedFavorites = cachedFavorites?.map {
+            Favorite(id = it.id, title = it.title, artUrl = it.albumArtUri)
+        } ?: emptyList()
+        state = state.copy(
+            queue = enrichedQueue,
+            favorites = enrichedFavorites,
+            capabilities = WidgetStateMapper.capabilitiesFor(
+                connectionMode = activeConnectionMode,
+                track = state.currentTrack,
+                currentSource = currentSource,
+                hasQueue = enrichedQueue.isNotEmpty(),
+                hasFavorites = enrichedFavorites.isNotEmpty(),
+                hasLocalGrouping = cachedZoneGroups != null
+            )
+        )
+
         Log.d(TAG, "Album art URL: ${state.currentTrack.artUrl ?: "(null)"}")
         val artBitmap = AlbumArtLoader.loadAndCache(
             context = context,
             artUrl = state.currentTrack.artUrl,
-            speakerIp = ip
+            speakerIp = ip,
+            artworkVersion = artworkVersion
         )
         Log.d(TAG, "Album art loaded: ${artBitmap != null}")
         if (artBitmap != null) {
@@ -661,9 +742,11 @@ class SonosRepository private constructor(
                     lastPaletteArtUrl = artUrl
                 }
             }
-            state = state.copy(colorPalette = palette)
+            publishedArtworkVersion = artworkVersion
+            state = state.copy(colorPalette = palette, artworkVersion = artworkVersion)
             WidgetBackgroundRenderer.renderAndCache(context, artBitmap, artUrl)
         } else {
+            publishedArtworkVersion = null
             cachedPalette = null
             lastPaletteArtUrl = null
             WidgetBackgroundRenderer.clear(context)
@@ -671,7 +754,6 @@ class SonosRepository private constructor(
 
         cacheConnection(activeConnectionMode)
 
-        state = applyOptimisticOverrides(state)
         _widgetState.value = state
         WidgetStateStore.pushState(context, state)
         return state
@@ -863,21 +945,18 @@ class SonosRepository private constructor(
     // ──────────────────────────────────────────────
 
     /**
-     * Whether widget actions should be queued instead of executed immediately.
-     * True when the widget is in reconnecting state and there is hope of
-     * re-establishing a connection (cloud credentials exist).
-     *
-     * Called by [WidgetActions] callbacks to decide between immediate
-     * execution and debounce queuing.
+     * Deferred command replay is deliberately retired. Commands dispatched from
+     * an old rendered widget are either validated against current capabilities or
+     * rejected; they are never stored for a later connection.
      */
-    fun shouldDebounce(): Boolean = _widgetState.value.isReconnecting
+    fun shouldDebounce(): Boolean = false
 
     /**
      * Enqueues a widget action for deferred execution after reconnection.
      * Called by [WidgetActions] callbacks when [shouldDebounce] returns true.
      */
     fun enqueueAction(type: ActionDebouncer.ActionType, param: String? = null) {
-        actionDebouncer.enqueue(type, param)
+        Log.d(TAG, "Ignoring deferred $type action while reconnecting")
     }
 
     /**
@@ -956,15 +1035,33 @@ class SonosRepository private constructor(
     // Control commands (routed by connection mode)
     // ──────────────────────────────────────────────
 
-    suspend fun play(): Boolean = routeCommand(
-        local = { ip, port -> controller.play(ip, port) },
-        cloud = { cloudController.play() }
-    )
+    suspend fun play(): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canPlayPause, "play")) return false
+        return routeCommand(
+            local = { ip, port -> controller.play(ip, port) },
+            cloud = { cloudController.play() }
+        ).isAcknowledged
+    }
 
-    suspend fun pause(): Boolean = routeCommand(
-        local = { ip, port -> controller.pause(ip, port) },
-        cloud = { cloudController.pause() }
-    )
+    /** A stable media identity prevents a shared widget file being paired with old metadata. */
+    private fun artworkVersionFor(state: SonosWidgetState): String {
+        val track = state.currentTrack
+        return listOf(
+            state.activeZone.id,
+            track.artUrl.orEmpty(),
+            track.name,
+            track.artist,
+            track.album
+        ).joinToString("|")
+    }
+
+    suspend fun pause(): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canPlayPause, "pause")) return false
+        return routeCommand(
+            local = { ip, port -> controller.pause(ip, port) },
+            cloud = { cloudController.pause() }
+        ).isAcknowledged
+    }
 
     suspend fun togglePlayPause(): Boolean {
         val base = _widgetState.value
@@ -974,32 +1071,38 @@ class SonosRepository private constructor(
             PlaybackState.PLAYING
         }
         applyOptimisticPlayback(target)
-        val ok = if (target == PlaybackState.PAUSED) pause() else play()
-        if (!ok) revertPlaybackOptimism(base.playbackState)
-        return ok
+        val outcome = if (target == PlaybackState.PAUSED) {
+            routeCommand({ ip, port -> controller.pause(ip, port) }, { cloudController.pause() })
+        } else {
+            routeCommand({ ip, port -> controller.play(ip, port) }, { cloudController.play() })
+        }
+        if (outcome == CommandOutcome.DEFINITE_FAILURE) revertPlaybackOptimism(base.playbackState)
+        return outcome.isAcknowledged
     }
 
     suspend fun next(): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canNext, "next")) return false
         val base = _widgetState.value.playbackState
         // After a skip the speaker keeps playing — show the playing icon instantly.
         applyOptimisticPlayback(PlaybackState.PLAYING)
-        val ok = routeCommand(
+        val outcome = routeCommand(
             local = { ip, port -> controller.next(ip, port) },
             cloud = { cloudController.next() }
         )
-        if (!ok) revertPlaybackOptimism(base)
-        return ok
+        if (outcome == CommandOutcome.DEFINITE_FAILURE) revertPlaybackOptimism(base)
+        return outcome.isAcknowledged
     }
 
     suspend fun previous(): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canPrevious, "previous")) return false
         val base = _widgetState.value.playbackState
         applyOptimisticPlayback(PlaybackState.PLAYING)
-        val ok = routeCommand(
+        val outcome = routeCommand(
             local = { ip, port -> controller.previous(ip, port) },
             cloud = { cloudController.previous() }
         )
-        if (!ok) revertPlaybackOptimism(base)
-        return ok
+        if (outcome == CommandOutcome.DEFINITE_FAILURE) revertPlaybackOptimism(base)
+        return outcome.isAcknowledged
     }
 
     /** Drops the playback override and restores [base] while keeping any error banner. */
@@ -1008,39 +1111,60 @@ class SonosRepository private constructor(
         pushState(_widgetState.value.copy(playbackState = base))
     }
 
-    suspend fun seek(positionMs: Long): Boolean = routeCommand(
-        local = { ip, port -> controller.seek(ip, port, positionMs) },
-        cloud = { false }
-    )
+    suspend fun seek(positionMs: Long): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canSeek, "seek")) return false
+        return routeCommand(
+            local = { ip, port -> controller.seek(ip, port, positionMs) },
+            cloud = { false }
+        ).isAcknowledged
+    }
 
     suspend fun setVolume(volume: Int): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canChangeVolume, "change volume")) return false
         val base = _widgetState.value.volume
         applyOptimisticVolume(volume.coerceIn(0, 100))
-        val ok = routeCommand(
+        val outcome = routeCommand(
             local = { ip, port ->
                 if (isActiveGroupGrouped()) controller.setGroupVolume(ip, port, volume)
                 else controller.setVolume(ip, port, volume)
             },
             cloud = { cloudController.setVolume(volume) }
         )
-        if (!ok) {
+        if (outcome == CommandOutcome.DEFINITE_FAILURE) {
             optimisticVolume = null
             pushState(_widgetState.value.copy(volume = base))
         }
-        return ok
+        return outcome.isAcknowledged
+    }
+
+    /**
+     * Applies a relative user intent against the latest optimistic value. Unlike
+     * callbacks that each read the same stale volume, serialized deltas preserve
+     * every tap (for example, five +5 taps from 50 converge to 75).
+     */
+    suspend fun adjustVolume(delta: Int): Boolean = volumeIntentMutex.withLock {
+        setVolume((_widgetState.value.volume + delta).coerceIn(0, 100))
     }
 
     suspend fun setMute(muted: Boolean): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canMute, "mute")) return false
+        val base = _widgetState.value.volumeMuted
         // Optimistic + force a mute refetch on the re-poll that routeCommand runs.
         cachedMuted = muted
         muteDirty = true
-        return routeCommand(
+        pushState(_widgetState.value.copy(volumeMuted = muted))
+        val outcome = routeCommand(
             local = { ip, port ->
                 if (isActiveGroupGrouped()) controller.setGroupMute(ip, port, muted)
                 else controller.setMute(ip, port, muted)
             },
             cloud = { false }
         )
+        if (outcome == CommandOutcome.DEFINITE_FAILURE) {
+            cachedMuted = base
+            pushState(_widgetState.value.copy(volumeMuted = base))
+        }
+        return outcome.isAcknowledged
     }
 
     /**
@@ -1056,8 +1180,10 @@ class SonosRepository private constructor(
 
     suspend fun switchZone(zoneId: String): Boolean {
         if (activeConnectionMode == ConnectionMode.CLOUD) {
+            val generation = ++roomTargetGeneration
+            publishSwitchingRoom(zoneId, _widgetState.value.zones.find { it.id == zoneId }?.displayName.orEmpty())
             cloudController.setActiveGroup(zoneId)
-            return pollCloud() != null
+            return generation == roomTargetGeneration && pollCloud() != null
         }
 
         val groups = cachedZoneGroups ?: return false
@@ -1065,9 +1191,11 @@ class SonosRepository private constructor(
             val member = group.members.find { it.uuid == zoneId }
             if (member != null) {
                 val coordinator = group.members.find { it.isCoordinator } ?: member
+                val generation = ++roomTargetGeneration
                 activeSpeakerIp = coordinator.ip
                 activeSpeakerPort = coordinator.port
                 activeZoneId = coordinator.uuid
+                publishSwitchingRoom(coordinator.uuid, coordinator.zoneName)
                 preferences.saveActiveSpeaker(
                     coordinator.uuid,
                     coordinator.zoneName,
@@ -1077,7 +1205,7 @@ class SonosRepository private constructor(
                 Log.d(TAG, "Switched zone to: ${coordinator.zoneName} @ ${coordinator.ip}")
                 stoppedSinceMs = 0L
                 pollAndUpdate()
-                return true
+                return generation == roomTargetGeneration
             }
         }
 
@@ -1085,11 +1213,40 @@ class SonosRepository private constructor(
         return false
     }
 
+    /**
+     * A new target must never inherit the old target's track/artwork while its
+     * essential poll is pending. This state is shared to every widget instance.
+     */
+    private suspend fun publishSwitchingRoom(zoneId: String, zoneName: String) {
+        val current = _widgetState.value
+        val operation = PendingWidgetOperation(
+            id = "room-${System.currentTimeMillis()}",
+            type = WidgetOperationType.SWITCHING_ROOM,
+            targetId = zoneId,
+            affectedField = "room",
+            startedAtMs = System.currentTimeMillis()
+        )
+        pushState(current.copy(
+            activeZone = current.zones.find { it.id == zoneId }
+                ?: current.activeZone.copy(id = zoneId, displayName = zoneName),
+            currentTrack = current.currentTrack.copy(name = "", artist = "", album = "", artUrl = null,
+                durationMs = 0L, elapsedMs = 0L),
+            currentSource = "",
+            queue = emptyList(),
+            favorites = emptyList(),
+            artworkVersion = null,
+            pendingOperations = listOf(operation),
+            isContentStale = true,
+            errorMessage = null
+        ))
+    }
+
     // ──────────────────────────────────────────────
     // Shuffle & Repeat (Task 2.4)
     // ──────────────────────────────────────────────
 
     suspend fun toggleShuffle(): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canShuffle, "shuffle")) return false
         val current = _widgetState.value
         val newShuffle = !current.shuffleEnabled
 
@@ -1107,6 +1264,7 @@ class SonosRepository private constructor(
     }
 
     suspend fun cycleRepeatMode(): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canRepeat, "repeat")) return false
         val current = _widgetState.value
         val newRepeat = when (current.repeatMode) {
             RepeatMode.NONE -> RepeatMode.ALL
@@ -1131,8 +1289,9 @@ class SonosRepository private constructor(
     // Queue control (Task 2.3 — local only)
     // ──────────────────────────────────────────────
 
-    suspend fun playQueueItem(trackNr: Int): Boolean = executeLocalAndPoll { ip, port ->
-        controller.seekToTrack(ip, port, trackNr)
+    suspend fun playQueueItem(trackNr: Int): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canViewQueue, "play queue item")) return false
+        return executeLocalAndPoll { ip, port -> controller.seekToTrack(ip, port, trackNr) }
     }
 
     /**
@@ -1140,6 +1299,7 @@ class SonosRepository private constructor(
      * the active coordinator. Favorites are local-only (no cloud equivalent).
      */
     suspend fun playFavorite(favoriteId: String): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canPlayFavorites, "play favorite")) return false
         val fav = cachedFavorites?.find { it.id == favoriteId }
         if (fav == null) {
             Log.w(TAG, "Favorite '$favoriteId' not found in cache")
@@ -1152,17 +1312,26 @@ class SonosRepository private constructor(
             ?.find { group -> group.members.any { it.uuid == activeZoneId } }
             ?.coordinatorId
             ?: activeZoneId
-        // Loading a large playlist favorite into the queue can take 10-30s while
-        // the speaker pulls every track. Show the "updating" badge so the wait
-        // reads as in-progress rather than a frozen widget; the post-command poll
-        // clears it.
-        pushState(_widgetState.value.copy(isUpdating = true))
+        // Loading a playlist is content preparation, not a firmware update. Keep
+        // that intent separate so the widget can describe it truthfully.
+        val operationId = "favorite-${System.currentTimeMillis()}"
+        pushState(_widgetState.value.copy(
+            pendingOperations = _widgetState.value.pendingOperations + PendingWidgetOperation(
+                id = operationId,
+                type = WidgetOperationType.LOADING_FAVORITE,
+                targetId = coordinatorUuid.orEmpty(),
+                affectedField = "favorite",
+                startedAtMs = System.currentTimeMillis()
+            )
+        ))
         val ok = executeLocalAndPoll { ip, port ->
             controller.playFavorite(ip, port, fav.uri, fav.metadata, coordinatorUuid)
         }
-        // The success path's poll already clears isUpdating; clear it on failure
-        // too so the badge doesn't stick (keeping any error banner just pushed).
-        if (!ok) pushState(_widgetState.value.copy(isUpdating = false))
+        if (!ok) {
+            pushState(_widgetState.value.copy(
+                pendingOperations = _widgetState.value.pendingOperations.filterNot { it.id == operationId }
+            ))
+        }
         return ok
     }
 
@@ -1348,26 +1517,30 @@ class SonosRepository private constructor(
     // ──────────────────────────────────────────────
 
     /**
-     * Routes a command through either local or cloud, with a 3-second timeout.
-     * On timeout, reverts the optimistic UI update and shows an inline error.
-     * On success, auto-retries once via poll.
+     * Routes a command through either local or cloud with a command-only deadline.
+     * Reconciliation happens afterward, so slow secondary work cannot invalidate
+     * a speaker acknowledgement.
      */
+    private enum class CommandOutcome {
+        ACKNOWLEDGED,
+        DEFINITE_FAILURE,
+        UNKNOWN;
+
+        val isAcknowledged: Boolean get() = this == ACKNOWLEDGED
+    }
+
     private suspend fun routeCommand(
         local: suspend (ip: String, port: Int) -> Boolean,
         cloud: suspend () -> Boolean
-    ): Boolean {
-        val previousState = _widgetState.value
+    ): CommandOutcome {
+        val commandStartedAtMs = SystemClock.elapsedRealtime()
 
         val result = try {
             withTimeoutOrNull(COMMAND_TIMEOUT_MS) {
                 if (activeConnectionMode == ConnectionMode.CLOUD) {
-                    val ok = cloud()
-                    // Optimistic overrides hold the UI steady, so reconcile right
-                    // away rather than padding every command with a fixed delay.
-                    if (ok) pollCloud()
-                    ok
+                    cloud()
                 } else {
-                    executeLocalAndPoll(local)
+                    executeLocalCommand(local)
                 }
             }
         } catch (e: CancellationException) {
@@ -1378,15 +1551,65 @@ class SonosRepository private constructor(
         }
 
         if (result == null) {
-            // Timeout or exception — revert optimistic update
-            Log.w(TAG, "Command timed out (>${COMMAND_TIMEOUT_MS}ms) — reverting UI")
-            _widgetState.value = previousState
-            WidgetStateStore.pushState(context, previousState)
-            pushErrorMessage("Command timed out \u2014 tap to retry")
-            return false
+            // A timeout can occur after a speaker acts. Preserve the newest
+            // intent and make the next action an explicit status check.
+            recordUnknownCommand()
+            pushErrorMessage("Couldn't confirm command — check status")
+            return CommandOutcome.UNKNOWN
         }
 
-        return result
+        if (!result) {
+            pushErrorMessage("Command failed — check status")
+            return CommandOutcome.DEFINITE_FAILURE
+        }
+
+        Log.d(
+            TAG,
+            "Command acknowledged in ${SystemClock.elapsedRealtime() - commandStartedAtMs}ms; " +
+                "starting reconciliation"
+        )
+
+        // The command has already been acknowledged. Reconciliation is useful
+        // but belongs outside the command deadline: a slow queue/image refresh
+        // must never report this successful control action as failed.
+        try {
+            if (activeConnectionMode == ConnectionMode.CLOUD) pollCloud() else pollAndUpdate()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Command acknowledged; reconciliation will retry on the next poll", e)
+        }
+        return CommandOutcome.ACKNOWLEDGED
+    }
+
+    private suspend fun recordUnknownCommand() {
+        val now = System.currentTimeMillis()
+        pushState(_widgetState.value.copy(
+            pendingOperations = _widgetState.value.pendingOperations + PendingWidgetOperation(
+                id = "unknown-$now",
+                type = WidgetOperationType.COMMAND,
+                targetId = activeZoneId.orEmpty(),
+                affectedField = "command",
+                startedAtMs = now,
+                phase = WidgetOperationPhase.UNKNOWN
+            )
+        ))
+    }
+
+    private fun canExecute(supported: Boolean, action: String): Boolean {
+        if (!supported) Log.w(TAG, "Ignoring unsupported $action action for current state")
+        return supported
+    }
+
+    private suspend fun executeLocalCommand(
+        command: suspend (ip: String, port: Int) -> Boolean
+    ): Boolean {
+        val ip = activeSpeakerIp
+        if (ip == null) {
+            Log.w(TAG, "No active speaker — command ignored")
+            return false
+        }
+        return command(ip, activeSpeakerPort)
     }
 
     private suspend fun executeLocalAndPoll(
@@ -1469,26 +1692,23 @@ class SonosRepository private constructor(
     )
 
     /**
-     * Resolves the user's preferred room — the default zone configured in the
-     * companion app, or the [DEFAULT_ZONE_NAME] fallback — to a reachable group
-     * coordinator. Used only at cold start so the widget opens on the usual room
-     * instead of "whatever last played". The STOPPED re-scan still follows
-     * playback via [findBestCoordinator].
+     * Resolves the room explicitly selected for stay mode to a reachable group
+     * coordinator. There is deliberately no name fallback: a new installation
+     * chooses its target during setup, rather than silently controlling a room.
      *
      * Returns null if the preferred room isn't present in the topology or its
      * coordinator doesn't respond, in which case the caller falls back.
      */
     private suspend fun resolvePreferredCoordinator(
-        zoneGroups: List<ZoneGroup>
+        zoneGroups: List<ZoneGroup>,
+        target: SonosPreferences.DefaultZone?
     ): ZoneGroupMember? {
-        val default = preferences.getDefaultZone()
-        val preferredId = default?.id
-        val preferredName = (default?.name ?: DEFAULT_ZONE_NAME).trim()
+        val preferredId = target?.id ?: return null
+        val preferredName = target.name.trim()
 
         val group = zoneGroups.firstOrNull { g ->
             g.members.any { m ->
-                (preferredId != null && m.uuid == preferredId) ||
-                    m.zoneName.equals(preferredName, ignoreCase = true)
+                m.uuid == preferredId
             }
         } ?: return null
 
