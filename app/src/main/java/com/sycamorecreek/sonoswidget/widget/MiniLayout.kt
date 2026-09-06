@@ -18,14 +18,14 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
-import com.sycamorecreek.sonoswidget.R
 
 /**
  * Mini (~240x80dp) immersive widget layout for the lock screen and
  * hyper-compact grid placements.
  *
- * Single row: album art thumbnail, track title + room, play/pause and
- * next controls. Shares the "glass on art" design system with the larger
+ * Single row: album art thumbnail, track title + room, and play/pause.
+ * Next is intentionally omitted at the minimum supported width so metadata
+ * stays readable. Shares the "glass on art" design system with the larger
  * layouts via [ImmersiveSurface] and [WidgetTheme].
  */
 @GlanceComposable
@@ -37,7 +37,9 @@ fun MiniLayout(
 ) {
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
     val isSwitchingRoom = state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
-    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating || isSwitchingRoom
+    val isApplyingGrouping = state.pendingOperations.any { it.type == WidgetOperationType.APPLYING_GROUPING }
+    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating ||
+        isSwitchingRoom || isApplyingGrouping
     val hasTrack = state.currentTrack.name.isNotBlank()
 
     ImmersiveSurface(background = background, palette = state.colorPalette) {
@@ -78,7 +80,9 @@ fun MiniLayout(
                 Text(
                     text = when {
                         isDisconnected && state.isReconnecting -> "Reconnecting…"
+                        isApplyingGrouping -> "Applying speaker grouping…"
                         isSwitchingRoom -> "Switching room…"
+                        state.pendingOperations.any { it.type == WidgetOperationType.LOADING_FAVORITE } -> "Preparing favorite…"
                         isDisconnected -> "Check Wi-Fi connection"
                         state.activeZone.displayName.isNotBlank() -> state.activeZone.displayName
                         state.currentTrack.artist.isNotBlank() -> state.currentTrack.artist
@@ -103,16 +107,6 @@ fun MiniLayout(
                 iconSize = 20.dp
             )
 
-            Spacer(modifier = GlanceModifier.width(4.dp))
-
-            GlassIconButton(
-                resId = R.drawable.ic_skip_next,
-                contentDescription = "Next track",
-                action = actionRunCallback<NextTrackAction>(),
-                enabled = !controlsDisabled && state.capabilities.canNext,
-                boxSize = 40.dp,
-                iconSize = 22.dp
-            )
         }
     }
 }

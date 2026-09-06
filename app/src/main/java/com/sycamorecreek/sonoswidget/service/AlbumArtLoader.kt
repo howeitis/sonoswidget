@@ -37,7 +37,9 @@ object AlbumArtLoader {
 
     private const val TAG = "AlbumArtLoader"
     private const val ART_FILENAME = "album_art_current.webp"
-    private const val ART_SIZE_PX = 240 // Target size for widget art (80dp × 3x density)
+    // Full layout displays 128dp artwork. 512px remains sharp through 4x
+    // density while this loader retains only one decoded foreground bitmap.
+    private const val ART_SIZE_PX = 512
     private const val DISK_CACHE_DIR = "image_cache"
     private const val DISK_CACHE_MAX_SIZE = 50L * 1024 * 1024 // 50 MB per PRD
 

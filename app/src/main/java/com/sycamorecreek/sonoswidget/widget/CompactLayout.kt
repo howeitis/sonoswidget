@@ -5,6 +5,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceComposable
 import androidx.glance.GlanceModifier
+import androidx.glance.action.actionParametersOf
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
@@ -42,9 +43,13 @@ fun CompactLayout(
     albumArt: Bitmap? = null,
     background: Bitmap? = null
 ) {
+    val prefs = androidx.glance.currentState<androidx.datastore.preferences.core.Preferences>()
+    val showRoomSelector = prefs[androidx.datastore.preferences.core.booleanPreferencesKey("show_room_selector")] ?: false
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
     val isSwitchingRoom = state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
-    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating || isSwitchingRoom
+    val isApplyingGrouping = state.pendingOperations.any { it.type == WidgetOperationType.APPLYING_GROUPING }
+    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating ||
+        isSwitchingRoom || isApplyingGrouping
     val hasTrack = state.currentTrack.name.isNotBlank()
     val palette = state.colorPalette
 
@@ -62,6 +67,9 @@ fun CompactLayout(
                 Spacer(modifier = GlanceModifier.height(6.dp))
             }
 
+            if (showRoomSelector) {
+                CompactRoomSelector(state)
+            } else {
             // ── Main content row: art + track info + controls ──
             Row(
                 modifier = GlanceModifier.fillMaxWidth(),
@@ -103,6 +111,7 @@ fun CompactLayout(
                         text = when {
                             state.isOffline -> "No internet and no local network"
                             state.isUpdating -> "Speaker is updating firmware…"
+                            isApplyingGrouping -> "Applying speaker grouping…"
                             isSwitchingRoom -> "Switching room…"
                             state.pendingOperations.any { it.type == WidgetOperationType.LOADING_FAVORITE } -> "Preparing favorite…"
                             state.isRateLimited -> "Cloud API rate limited — retrying…"
@@ -169,7 +178,7 @@ fun CompactLayout(
 
                         Spacer(modifier = GlanceModifier.defaultWeight())
 
-                        // Zone / volume indicator
+                        // Room selector / volume indicator
                         if (!controlsDisabled) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 val modeIcon = connectionModeIconRes(state.connectionMode)
@@ -181,25 +190,88 @@ fun CompactLayout(
                                     )
                                     Spacer(modifier = GlanceModifier.width(4.dp))
                                 }
-                                Text(
+                                GlassChip(
                                     text = buildZoneLabel(state),
-                                    style = TextStyle(
-                                        color = ColorProvider(WidgetTheme.TextTertiary),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium
-                                    ),
-                                    maxLines = 1
+                                    contentDescription = "Room: ${state.activeZone.displayName}. Tap to switch rooms",
+                                    action = actionRunCallback<ToggleRoomSelectorAction>(),
+                                    textColor = WidgetTheme.TextTertiary,
+                                    fontSize = 10,
+                                    horizontalPadding = 7.dp,
+                                    verticalPadding = 4.dp
                                 )
                             }
                         }
                     }
                 }
             }
+            }
 
             // ── Permission hint (one-time, shown when local network denied) ──
             if (state.showPermissionHint) {
                 Spacer(modifier = GlanceModifier.height(6.dp))
                 PermissionHintBanner()
+            }
+        }
+    }
+}
+
+/** Compact room navigation replaces player content, keeping this size bounded. */
+@GlanceComposable
+@androidx.compose.runtime.Composable
+private fun CompactRoomSelector(state: SonosWidgetState) {
+    Column(modifier = GlanceModifier.fillMaxWidth()) {
+        Row(
+            modifier = GlanceModifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            GlassChip(
+                text = "Back",
+                contentDescription = "Close room selector",
+                action = actionRunCallback<ToggleRoomSelectorAction>(),
+                textColor = WidgetTheme.TextSecondary,
+                fontSize = 10,
+                horizontalPadding = 9.dp,
+                verticalPadding = 5.dp
+            )
+            Spacer(modifier = GlanceModifier.width(8.dp))
+            Text(
+                text = "SWITCH ROOM",
+                style = TextStyle(
+                    color = ColorProvider(WidgetTheme.TextTertiary),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+        }
+        Spacer(modifier = GlanceModifier.height(8.dp))
+        val rooms = state.zones.filter { it.id != state.activeZone.id }.take(4)
+        if (rooms.isEmpty()) {
+            Text(
+                text = "No other rooms found",
+                style = TextStyle(color = ColorProvider(WidgetTheme.TextTertiary), fontSize = 12.sp)
+            )
+        } else {
+            rooms.chunked(2).forEachIndexed { rowIndex, row ->
+                if (rowIndex > 0) Spacer(modifier = GlanceModifier.height(6.dp))
+                Row(modifier = GlanceModifier.fillMaxWidth()) {
+                    row.forEachIndexed { index, room ->
+                        if (index > 0) Spacer(modifier = GlanceModifier.width(6.dp))
+                        GlassChip(
+                            text = room.displayName.take(16),
+                            contentDescription = "Switch to ${room.displayName}",
+                            action = actionRunCallback<SwitchZoneAction>(
+                                actionParametersOf(ZONE_ID_KEY to room.id)
+                            ),
+                            modifier = GlanceModifier.defaultWeight(),
+                            background = WidgetTheme.GlassStrong,
+                            textColor = WidgetTheme.TextPrimary,
+                            fontSize = 11,
+                            horizontalPadding = 8.dp,
+                            verticalPadding = 9.dp
+                        )
+                    }
+                    if (row.size == 1) Box(modifier = GlanceModifier.defaultWeight()) {}
+                }
             }
         }
     }

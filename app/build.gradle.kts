@@ -51,6 +51,10 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // Keep pure Kotlin widget-state tests in the conventional Kotlin source
+    // directory; AGP otherwise only discovers Java test files in this project.
+    sourceSets.getByName("test").java.srcDir("src/test/kotlin")
 }
 
 dependencies {
@@ -100,4 +104,6 @@ dependencies {
     // AndroidX Core
     implementation(libs.core.ktx)
     implementation(libs.lifecycle.runtime.ktx)
+
+    testImplementation(libs.junit)
 }

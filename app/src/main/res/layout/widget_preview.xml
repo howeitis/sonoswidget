@@ -13,12 +13,13 @@
         android:layout_height="80dp"
         android:background="@drawable/preview_album_art_bg">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+        <ImageView
+            android:layout_width="28dp"
+            android:layout_height="28dp"
             android:layout_gravity="center"
-            android:text="\uD83C\uDFB5"
-            android:textSize="28sp" />
+            android:contentDescription="@null"
+            android:src="@drawable/ic_music_note"
+            android:tint="#FFFFFF" />
 
     </FrameLayout>
 
@@ -58,28 +59,28 @@
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="\u23EE"
-                android:textColor="#FFFFFF"
-                android:textSize="18sp" />
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_skip_previous"
+                android:tint="#FFFFFF" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
                 android:layout_marginStart="16dp"
-                android:text="\u23F8"
-                android:textColor="#FFFFFF"
-                android:textSize="24sp" />
+                android:contentDescription="@null"
+                android:src="@drawable/ic_pause"
+                android:tint="#FFFFFF" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
                 android:layout_marginStart="16dp"
-                android:text="\u23ED"
-                android:textColor="#FFFFFF"
-                android:textSize="18sp" />
+                android:contentDescription="@null"
+                android:src="@drawable/ic_skip_next"
+                android:tint="#FFFFFF" />
 
         </LinearLayout>
 
@@ -91,11 +92,12 @@
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="\uD83D\uDD0A"
-                android:textSize="12sp" />
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_volume_up"
+                android:tint="#B0B0C0" />
 
             <TextView
                 android:layout_width="wrap_content"

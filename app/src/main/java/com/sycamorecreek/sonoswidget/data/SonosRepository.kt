@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Single source of truth for Sonos state across the app.
@@ -171,6 +172,10 @@ class SonosRepository private constructor(
     private var optimisticVolumeUntilMs: Long = 0L
     /** Serializes relative volume intent so rapid widget callbacks cannot race. */
     private val volumeIntentMutex = Mutex()
+    /** One shared refresh gate for service, workers, companion, and widget taps. */
+    private val refreshMutex = Mutex()
+    /** A request received mid-refresh earns one immediate follow-up cycle. */
+    private val refreshRequested = AtomicBoolean(false)
 
     // Palette extraction is expensive; only recompute when the art URL changes.
     private var lastPaletteArtUrl: String? = null
@@ -503,6 +508,24 @@ class SonosRepository private constructor(
     // ──────────────────────────────────────────────
 
     suspend fun pollAndUpdate(): SonosWidgetState? {
+        if (!refreshMutex.tryLock()) {
+            refreshRequested.set(true)
+            Log.d(TAG, "Refresh request coalesced; one follow-up reconciliation is queued")
+            return _widgetState.value
+        }
+        var result: SonosWidgetState?
+        try {
+            do {
+                refreshRequested.set(false)
+                result = pollAndUpdateLocked()
+            } while (refreshRequested.getAndSet(false))
+            return result
+        } finally {
+            refreshMutex.unlock()
+        }
+    }
+
+    private suspend fun pollAndUpdateLocked(): SonosWidgetState? {
         val wasReconnecting = _widgetState.value.isReconnecting
         localRecoveryAttempted = false
 
@@ -534,9 +557,13 @@ class SonosRepository private constructor(
     private suspend fun pollLocal(): SonosWidgetState? {
         val ip = activeSpeakerIp ?: return null
         val port = activeSpeakerPort
+        val targetGeneration = roomTargetGeneration
+        val targetZoneId = activeZoneId
 
         val (transportInfo, positionInfo, volumeInfo) =
             controller.pollPlaybackState(ip, port)
+
+        if (!isPollTargetCurrent(targetGeneration, targetZoneId, ip)) return null
 
         if (transportInfo == null && positionInfo == null && volumeInfo == null) {
             Log.w(TAG, "All local polls failed — speaker at $ip may be unreachable")
@@ -691,6 +718,7 @@ class SonosRepository private constructor(
             artworkVersion = artworkVersion.takeIf { it == publishedArtworkVersion }
         )
         state = applyOptimisticOverrides(state)
+        if (!isPollTargetCurrent(targetGeneration, targetZoneId, ip)) return null
         _widgetState.value = state
         WidgetStateStore.pushState(context, state)
 
@@ -721,6 +749,8 @@ class SonosRepository private constructor(
                 hasLocalGrouping = cachedZoneGroups != null
             )
         )
+
+        if (!isPollTargetCurrent(targetGeneration, targetZoneId, ip)) return null
 
         Log.d(TAG, "Album art URL: ${state.currentTrack.artUrl ?: "(null)"}")
         val artBitmap = AlbumArtLoader.loadAndCache(
@@ -754,6 +784,7 @@ class SonosRepository private constructor(
 
         cacheConnection(activeConnectionMode)
 
+        if (!isPollTargetCurrent(targetGeneration, targetZoneId, ip)) return null
         _widgetState.value = state
         WidgetStateStore.pushState(context, state)
         return state
@@ -799,6 +830,7 @@ class SonosRepository private constructor(
     }
 
     private suspend fun pollCloud(): SonosWidgetState? {
+        val targetGeneration = roomTargetGeneration
         // Check if we're in a rate-limit backoff period
         if (System.currentTimeMillis() < rateLimitedUntilMs) {
             Log.d(TAG, "Cloud poll skipped — rate limited until ${rateLimitedUntilMs}")
@@ -806,6 +838,7 @@ class SonosRepository private constructor(
         }
 
         val cloudState = cloudController.getPlaybackStatus()
+        if (targetGeneration != roomTargetGeneration) return null
         if (cloudState == null) {
             // Check if cloud controller reported a rate limit
             if (cloudController.isRateLimited) {
@@ -837,6 +870,7 @@ class SonosRepository private constructor(
         cacheConnection(ConnectionMode.CLOUD)
 
         val displayState = applyOptimisticOverrides(successState)
+        if (targetGeneration != roomTargetGeneration) return null
         _widgetState.value = displayState
         WidgetStateStore.pushState(context, displayState)
         return displayState
@@ -1218,6 +1252,13 @@ class SonosRepository private constructor(
      * essential poll is pending. This state is shared to every widget instance.
      */
     private suspend fun publishSwitchingRoom(zoneId: String, zoneName: String) {
+        // Secondary data is destination-scoped. Do not reuse room A's queue or
+        // favorites while room B is being confirmed.
+        cachedQueue = null
+        cachedFavorites = null
+        cachedTransportSettings = null
+        cachedSource = ""
+        lastQueueTrackNum = -1
         val current = _widgetState.value
         val operation = PendingWidgetOperation(
             id = "room-${System.currentTimeMillis()}",
@@ -1239,6 +1280,12 @@ class SonosRepository private constructor(
             isContentStale = true,
             errorMessage = null
         ))
+    }
+
+    private fun isPollTargetCurrent(generation: Long, zoneId: String?, ip: String): Boolean {
+        val current = generation == roomTargetGeneration && zoneId == activeZoneId && ip == activeSpeakerIp
+        if (!current) Log.d(TAG, "Discarding poll result for obsolete room target")
+        return current
     }
 
     // ──────────────────────────────────────────────
@@ -1444,6 +1491,71 @@ class SonosRepository private constructor(
         return allSucceeded
     }
 
+    /** Applies an explicit grouping draft; no membership changes occur before this call. */
+    suspend fun applyGroupingDraft(selectedSpeakerIds: Set<String>): Boolean {
+        if (!canExecute(_widgetState.value.capabilities.canGroup, "apply grouping")) return false
+        if (activeConnectionMode == ConnectionMode.CLOUD) return false
+        if (_widgetState.value.pendingOperations.any {
+                it.type == WidgetOperationType.APPLYING_GROUPING
+            }) {
+            Log.d(TAG, "Ignoring duplicate grouping apply while one is in flight")
+            return false
+        }
+
+        // Membership can change outside the widget. Validate the topology at the
+        // last responsible moment so an explicit draft is never applied to a
+        // stale group map.
+        val ip = activeSpeakerIp ?: return false
+        val groups = controller.getZoneGroupState(ip, activeSpeakerPort) ?: return false
+        cachedZoneGroups = groups
+        lastZoneRefreshMs = System.currentTimeMillis()
+        val activeId = activeZoneId ?: return false
+        val activeGroup = groups.firstOrNull { group -> group.members.any { it.uuid == activeId } }
+            ?: return false
+        val coordinatorId = activeGroup.coordinatorId
+        val desired = selectedSpeakerIds + coordinatorId
+        val members = groups.flatMap { it.members }.distinctBy { it.uuid }
+        val operationId = "group-${System.currentTimeMillis()}"
+        pushState(_widgetState.value.copy(
+            pendingOperations = listOf(PendingWidgetOperation(
+                id = operationId,
+                type = WidgetOperationType.APPLYING_GROUPING,
+                targetId = coordinatorId,
+                affectedField = "grouping",
+                startedAtMs = System.currentTimeMillis()
+            ))
+        ))
+
+        var succeeded = true
+        for (member in members) {
+            if (member.uuid == coordinatorId) continue
+            val groupedHere = activeGroup.members.any { it.uuid == member.uuid }
+            when {
+                member.uuid in desired && !groupedHere -> {
+                    if (!controller.addToGroup(member.ip, member.port, coordinatorId)) succeeded = false
+                }
+                member.uuid !in desired && groupedHere -> {
+                    if (!controller.removeFromGroup(member.ip, member.port)) succeeded = false
+                }
+            }
+        }
+
+        kotlinx.coroutines.delay(500)
+        forceZoneRefreshUntilMs = System.currentTimeMillis() + 8_000L
+        cachedZoneGroups = controller.getZoneGroupState(ip, activeSpeakerPort)
+        lastZoneRefreshMs = System.currentTimeMillis()
+        pollAndUpdate()
+        if (!succeeded) {
+            // The topology above is the source of truth after a partial apply.
+            // Keep the editor open and give the user a concrete recovery path
+            // instead of pretending the staged selection was all-or-nothing.
+            pushState(_widgetState.value.copy(
+                errorMessage = "Some speakers could not be regrouped. Review the selection and try again."
+            ))
+        }
+        return succeeded
+    }
+
     private fun buildOptimisticGroupState(
         currentState: SonosWidgetState,
         speakerUuid: String,
@@ -1573,7 +1685,7 @@ class SonosRepository private constructor(
         // but belongs outside the command deadline: a slow queue/image refresh
         // must never report this successful control action as failed.
         try {
-            if (activeConnectionMode == ConnectionMode.CLOUD) pollCloud() else pollAndUpdate()
+            pollAndUpdate()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

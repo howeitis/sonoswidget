@@ -53,17 +53,31 @@ fun ExpandedLayout(
 ) {
     val prefs = androidx.glance.currentState<androidx.datastore.preferences.core.Preferences>()
     val showRoomSelector = prefs[androidx.datastore.preferences.core.booleanPreferencesKey("show_room_selector")] ?: false
+    val showGroupingEditor = prefs[SHOW_GROUPING_EDITOR_KEY] ?: false
+    val groupingDraft = prefs[GROUPING_DRAFT_KEY] ?: emptySet()
+    val selectedSecondarySection = prefs[SECONDARY_SECTION_KEY]
 
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
     val isSwitchingRoom = state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
-    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating || isSwitchingRoom
+    val isApplyingGrouping = state.pendingOperations.any {
+        it.type == WidgetOperationType.APPLYING_GROUPING
+    }
+    val controlsDisabled = isDisconnected || state.isOffline || state.isRateLimited || state.isUpdating ||
+        isSwitchingRoom || isApplyingGrouping
     val hasTrack = state.currentTrack.name.isNotBlank()
     val palette = state.colorPalette
     val accent = WidgetTheme.accent(palette)
     // Keep one bounded secondary surface. Queue is most useful while music is
     // active; favorites are the useful idle affordance when playback stops.
-    val showFavoritesAsSecondary = state.playbackState != PlaybackState.PLAYING &&
-        state.favorites.isNotEmpty() && state.capabilities.canPlayFavorites
+    val hasFavoritesSection = state.favorites.isNotEmpty() && state.capabilities.canPlayFavorites
+    val hasQueueSection = state.capabilities.canViewQueue
+    val showFavoritesAsSecondary = when {
+        !hasFavoritesSection -> false
+        !hasQueueSection -> true
+        selectedSecondarySection == SECONDARY_SECTION_FAVORITES -> true
+        selectedSecondarySection == SECONDARY_SECTION_UP_NEXT -> false
+        else -> state.playbackState != PlaybackState.PLAYING
+    }
 
     ImmersiveSurface(background = background, palette = palette) {
         Column(
@@ -133,25 +147,49 @@ fun ExpandedLayout(
 
             // ── Group 4: one bounded secondary section ──
             Column(modifier = GlanceModifier.fillMaxWidth()) {
-                if (showFavoritesAsSecondary) {
-                    FavoritesSection(state, controlsDisabled)
+                if (showGroupingEditor) {
+                    GroupingEditor(state, groupingDraft, controlsDisabled, isApplyingGrouping)
                 } else {
-                    SectionHeader(
-                        title = if (state.queue.isEmpty()) "Up Next" else "Up Next · ${state.queue.size}"
-                    )
-                    Spacer(modifier = GlanceModifier.height(4.dp))
-                    if (state.queue.isEmpty()) {
-                        Text(
-                            text = "Queue is empty",
-                            style = TextStyle(
-                                color = ColorProvider(WidgetTheme.TextTertiary),
-                                fontSize = 12.sp
-                            )
-                        )
+                    if (hasFavoritesSection && hasQueueSection) {
+                        SecondarySectionPicker(showFavoritesAsSecondary)
+                        Spacer(modifier = GlanceModifier.height(8.dp))
+                    }
+                    if (!controlsDisabled && state.capabilities.canGroup) {
+                        GroupingEntryPoint()
+                        Spacer(modifier = GlanceModifier.height(8.dp))
+                    }
+                    if (showFavoritesAsSecondary) {
+                        FavoritesSection(state, controlsDisabled)
                     } else {
-                        // A bounded list prevents secondary content from pushing
-                        // transport or volume outside the offered widget size.
-                        state.queue.take(3).forEach { item -> QueueItemRow(item) }
+                        SectionHeader(
+                            title = if (state.queue.isEmpty()) "Up Next" else "Up Next · ${state.queue.size}"
+                        )
+                        Spacer(modifier = GlanceModifier.height(4.dp))
+                        if (state.queue.isEmpty()) {
+                            Text(
+                                text = "Queue is empty",
+                                style = TextStyle(
+                                    color = ColorProvider(WidgetTheme.TextTertiary),
+                                    fontSize = 12.sp
+                                )
+                            )
+                            if (!hasFavoritesSection) {
+                                Spacer(modifier = GlanceModifier.height(8.dp))
+                                GlassChip(
+                                    text = "Open Sonos",
+                                    contentDescription = "Open the Sonos app",
+                                    action = actionRunCallback<OpenSonosAppAction>(),
+                                    textColor = WidgetTheme.TextSecondary,
+                                    fontSize = 10,
+                                    horizontalPadding = 10.dp,
+                                    verticalPadding = 6.dp
+                                )
+                            }
+                        } else {
+                            // A bounded list prevents secondary content from pushing
+                            // transport or volume outside the offered widget size.
+                            state.queue.take(3).forEach { item -> QueueItemRow(item) }
+                        }
                     }
                 }
             }
@@ -162,6 +200,132 @@ fun ExpandedLayout(
                 PermissionHintBanner()
             }
         }
+    }
+}
+
+@GlanceComposable
+@androidx.compose.runtime.Composable
+private fun GroupingEditor(
+    state: SonosWidgetState,
+    draft: Set<String>,
+    controlsDisabled: Boolean,
+    isApplying: Boolean
+) {
+    Column(modifier = GlanceModifier.fillMaxWidth()) {
+        Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "PLAY IN…",
+                style = TextStyle(
+                    color = ColorProvider(WidgetTheme.TextSecondary),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+            Spacer(modifier = GlanceModifier.defaultWeight())
+            GlassChip(
+                text = "Cancel",
+                contentDescription = "Cancel speaker grouping changes",
+                action = actionRunCallback<CancelGroupingEditorAction>(),
+                textColor = WidgetTheme.TextTertiary,
+                fontSize = 10,
+                horizontalPadding = 8.dp,
+                verticalPadding = 5.dp
+            )
+        }
+        Spacer(modifier = GlanceModifier.height(6.dp))
+        state.zones.take(6).chunked(3).forEachIndexed { rowIndex, row ->
+            if (rowIndex > 0) Spacer(modifier = GlanceModifier.height(6.dp))
+            Row(modifier = GlanceModifier.fillMaxWidth()) {
+                row.forEachIndexed { index, zone ->
+                    if (index > 0) Spacer(modifier = GlanceModifier.width(6.dp))
+                    val selected = zone.id in draft || zone.id == state.activeZone.id
+                    GlassChip(
+                        text = zone.displayName.take(12),
+                        contentDescription = if (selected) "${zone.displayName}, selected" else "${zone.displayName}, not selected",
+                        action = if (zone.id == state.activeZone.id) null else actionRunCallback<ToggleGroupingDraftAction>(
+                            actionParametersOf(SPEAKER_UUID_KEY to zone.id)
+                        ),
+                        modifier = GlanceModifier.defaultWeight(),
+                        background = if (selected) WidgetTheme.accentGlass(state.colorPalette) else WidgetTheme.Glass,
+                        textColor = if (selected) WidgetTheme.TextPrimary else WidgetTheme.TextSecondary,
+                        bold = selected,
+                        fontSize = 10,
+                        horizontalPadding = 6.dp,
+                        verticalPadding = 7.dp
+                    )
+                }
+                repeat(3 - row.size) {
+                    if (row.isNotEmpty()) Spacer(modifier = GlanceModifier.width(6.dp))
+                    Box(modifier = GlanceModifier.defaultWeight()) {}
+                }
+            }
+        }
+        Spacer(modifier = GlanceModifier.height(8.dp))
+        GlassChip(
+            text = when {
+                isApplying -> "Applying…"
+                controlsDisabled -> "Connect to speakers’ Wi-Fi to apply"
+                else -> "Apply"
+            },
+            contentDescription = "Apply speaker grouping changes",
+            action = if (controlsDisabled) null else actionRunCallback<ApplyGroupingDraftAction>(),
+            textColor = if (controlsDisabled) WidgetTheme.Disabled else WidgetTheme.TextPrimary,
+            background = if (controlsDisabled) WidgetTheme.Glass else WidgetTheme.accentGlass(state.colorPalette),
+            bold = !controlsDisabled,
+            fontSize = 11,
+            horizontalPadding = 14.dp,
+            verticalPadding = 7.dp
+        )
+    }
+}
+
+@GlanceComposable
+@androidx.compose.runtime.Composable
+private fun GroupingEntryPoint() {
+    GlassChip(
+        text = "Play in…",
+        contentDescription = "Edit speaker grouping",
+        action = actionRunCallback<OpenGroupingEditorAction>(),
+        textColor = WidgetTheme.TextSecondary,
+        fontSize = 10,
+        horizontalPadding = 10.dp,
+        verticalPadding = 6.dp
+    )
+}
+
+@GlanceComposable
+@androidx.compose.runtime.Composable
+private fun SecondarySectionPicker(showFavorites: Boolean) {
+    Row(modifier = GlanceModifier.fillMaxWidth()) {
+        GlassChip(
+            text = "Up Next",
+            contentDescription = if (showFavorites) "Show Up Next" else "Up Next selected",
+            action = if (showFavorites) actionRunCallback<SelectSecondarySectionAction>(
+                actionParametersOf(SECONDARY_SECTION_PARAMETER_KEY to SECONDARY_SECTION_UP_NEXT)
+            ) else null,
+            modifier = GlanceModifier.defaultWeight(),
+            background = if (showFavorites) WidgetTheme.Glass else WidgetTheme.GlassStrong,
+            textColor = if (showFavorites) WidgetTheme.TextSecondary else WidgetTheme.TextPrimary,
+            bold = !showFavorites,
+            fontSize = 10,
+            horizontalPadding = 8.dp,
+            verticalPadding = 6.dp
+        )
+        Spacer(modifier = GlanceModifier.width(6.dp))
+        GlassChip(
+            text = "Favorites",
+            contentDescription = if (showFavorites) "Favorites selected" else "Show Favorites",
+            action = if (showFavorites) null else actionRunCallback<SelectSecondarySectionAction>(
+                actionParametersOf(SECONDARY_SECTION_PARAMETER_KEY to SECONDARY_SECTION_FAVORITES)
+            ),
+            modifier = GlanceModifier.defaultWeight(),
+            background = if (showFavorites) WidgetTheme.GlassStrong else WidgetTheme.Glass,
+            textColor = if (showFavorites) WidgetTheme.TextPrimary else WidgetTheme.TextSecondary,
+            bold = showFavorites,
+            fontSize = 10,
+            horizontalPadding = 8.dp,
+            verticalPadding = 6.dp
+        )
     }
 }
 
@@ -179,7 +343,17 @@ private fun HeaderRow(
         modifier = GlanceModifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (!controlsDisabled && state.activeZone.displayName.isNotBlank()) {
+        if (state.connectionMode == ConnectionMode.DISCONNECTED) {
+            GlassChip(
+                text = "Reconnect",
+                contentDescription = "Reconnect to Sonos speakers",
+                action = actionRunCallback<RefreshStatusAction>(),
+                textColor = WidgetTheme.TextSecondary,
+                fontSize = 10,
+                horizontalPadding = 10.dp,
+                verticalPadding = 6.dp
+            )
+        } else if (!controlsDisabled && state.activeZone.displayName.isNotBlank()) {
             GlassChip(
                 text = state.activeZone.displayName.uppercase(),
                 contentDescription = "Room: ${state.activeZone.displayName}. Tap to switch rooms",
@@ -232,6 +406,8 @@ private fun NowPlayingHero(
     hasTrack: Boolean
 ) {
     val isDisconnected = state.connectionMode == ConnectionMode.DISCONNECTED
+    val isSwitchingRoom = state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
+    val isApplyingGrouping = state.pendingOperations.any { it.type == WidgetOperationType.APPLYING_GROUPING }
 
     Row(
         modifier = GlanceModifier.fillMaxWidth(),
@@ -271,6 +447,9 @@ private fun NowPlayingHero(
                 text = when {
                     state.isOffline -> "No internet and no local network"
                     state.isUpdating -> "Speaker is updating firmware…"
+                    isApplyingGrouping -> "Applying speaker grouping…"
+                    isSwitchingRoom -> "Switching room…"
+                    state.pendingOperations.any { it.type == WidgetOperationType.LOADING_FAVORITE } -> "Preparing favorite…"
                     state.isRateLimited -> "Cloud API rate limited — retrying…"
                     isDisconnected && state.isReconnecting -> "Reconnecting…"
                     isDisconnected -> "Check Wi-Fi connection"

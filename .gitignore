@@ -18,6 +18,7 @@ app/build/
 
 # Kotlin
 *.class
+.kotlin/
 
 # OS
 .DS_Store

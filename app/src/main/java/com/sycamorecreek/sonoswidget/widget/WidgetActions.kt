@@ -55,7 +55,10 @@ private fun canDispatch(repo: SonosRepository, supported: Boolean, action: Strin
     val state = repo.widgetState.value
     val unavailable = state.connectionMode == ConnectionMode.DISCONNECTED ||
         state.isOffline || state.isRateLimited || state.isUpdating ||
-        state.pendingOperations.any { it.type == WidgetOperationType.SWITCHING_ROOM }
+        state.pendingOperations.any {
+            it.type == WidgetOperationType.SWITCHING_ROOM ||
+                it.type == WidgetOperationType.APPLYING_GROUPING
+        }
     if (unavailable || !supported) {
         Log.d(TAG, "$action ignored because its current capability is unavailable")
         return false
@@ -582,6 +585,79 @@ class ToggleRoomSelectorAction : ActionCallback {
     }
 }
 
+internal val SHOW_GROUPING_EDITOR_KEY = androidx.datastore.preferences.core.booleanPreferencesKey("show_grouping_editor")
+internal val GROUPING_DRAFT_KEY = androidx.datastore.preferences.core.stringSetPreferencesKey("grouping_draft_ids")
+internal val SECONDARY_SECTION_KEY = androidx.datastore.preferences.core.stringPreferencesKey("secondary_section")
+internal val SECONDARY_SECTION_PARAMETER_KEY = ActionParameters.Key<String>("secondary_section")
+internal const val SECONDARY_SECTION_UP_NEXT = "up_next"
+internal const val SECONDARY_SECTION_FAVORITES = "favorites"
+
+/** Persists a secondary-surface choice only for the tapped widget instance. */
+class SelectSecondarySectionAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        val section = parameters[SECONDARY_SECTION_PARAMETER_KEY] ?: return
+        if (section !in setOf(SECONDARY_SECTION_UP_NEXT, SECONDARY_SECTION_FAVORITES)) return
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            prefs[SECONDARY_SECTION_KEY] = section
+        }
+        SonosWidget().update(context, glanceId)
+    }
+}
+
+/** Opens a per-widget grouping draft; it does not send a Sonos command. */
+class OpenGroupingEditorAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        val state = SonosRepository.getInstance(context).widgetState.value
+        if (state.connectionMode == ConnectionMode.CLOUD || !state.capabilities.canGroup) return
+        val selected = state.zones.filter { it.groupId == state.activeZone.groupId }.map { it.id }.toSet()
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            prefs[SHOW_GROUPING_EDITOR_KEY] = true
+            prefs[GROUPING_DRAFT_KEY] = selected
+        }
+        SonosWidget().update(context, glanceId)
+    }
+}
+
+class ToggleGroupingDraftAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        val speakerId = parameters[SPEAKER_UUID_KEY] ?: return
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            val draft = (prefs[GROUPING_DRAFT_KEY] ?: emptySet()).toMutableSet()
+            if (!draft.add(speakerId)) draft.remove(speakerId)
+            prefs[GROUPING_DRAFT_KEY] = draft
+        }
+        SonosWidget().update(context, glanceId)
+    }
+}
+
+class CancelGroupingEditorAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            prefs[SHOW_GROUPING_EDITOR_KEY] = false
+            prefs.remove(GROUPING_DRAFT_KEY)
+        }
+        SonosWidget().update(context, glanceId)
+    }
+}
+
+class ApplyGroupingDraftAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        ensureServiceRunning(context)
+        var draft: Set<String> = emptySet()
+        androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+            draft = prefs[GROUPING_DRAFT_KEY] ?: emptySet()
+        }
+        val applied = SonosRepository.getInstance(context).applyGroupingDraft(draft)
+        if (applied) {
+            androidx.glance.appwidget.state.updateAppWidgetState(context, glanceId) { prefs ->
+                prefs[SHOW_GROUPING_EDITOR_KEY] = false
+                prefs.remove(GROUPING_DRAFT_KEY)
+            }
+            SonosWidget().update(context, glanceId)
+        }
+    }
+}
+
 /** Reconciles state after a command outcome that could not be confirmed. */
 class RefreshStatusAction : ActionCallback {
     override suspend fun onAction(
@@ -591,7 +667,6 @@ class RefreshStatusAction : ActionCallback {
     ) {
         ensureServiceRunning(context)
         val repository = SonosRepository.getInstance(context)
-        if (!repository.isConnected) repository.discoverAndConnect()
         repository.pollAndUpdate()
     }
 }

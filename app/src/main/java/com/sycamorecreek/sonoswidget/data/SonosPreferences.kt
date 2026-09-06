@@ -42,7 +42,7 @@ class SonosPreferences(private val context: Context) {
         private val KEY_ROOM_TARGET_ID = stringPreferencesKey("room_target_id")
         private val KEY_ROOM_TARGET_NAME = stringPreferencesKey("room_target_name")
 
-        private const val EXPERIENCE_PREFERENCES_VERSION = 1
+        private const val EXPERIENCE_PREFERENCES_VERSION = RoomFollowMigrationPolicy.CURRENT_VERSION
         private val LEGACY_KEY_NAMES = setOf(
             "active_zone_id",
             "active_zone_name",
@@ -180,30 +180,42 @@ class SonosPreferences(private val context: Context) {
         val snapshot = context.sonosPrefsDataStore.data.first()
         val explicitMode = parseRoomFollowMode(snapshot[KEY_ROOM_FOLLOW_MODE])
         val version = snapshot[KEY_EXPERIENCE_PREFERENCES_VERSION] ?: 0
-        if (explicitMode != null && version >= EXPERIENCE_PREFERENCES_VERSION) {
-            return readRoomFollowPreferences(snapshot, explicitMode, version)
-        }
-
         val legacyDefault = readLegacyDefaultZone(snapshot)
+        val explicitTarget = readRoomFollowPreferences(
+            snapshot,
+            explicitMode ?: RoomFollowMode.STAY_WITH_ROOM,
+            version
+        ).target
         val hasLegacyEvidence = hasPersistedWidgetState || snapshot.asMap().keys.any {
             it.name in LEGACY_KEY_NAMES
         }
-        val mode = explicitMode ?: when {
-            legacyDefault != null -> RoomFollowMode.STAY_WITH_ROOM
-            hasLegacyEvidence -> RoomFollowMode.FOLLOW_PLAYING_MUSIC
-            else -> RoomFollowMode.STAY_WITH_ROOM
+        val decision = RoomFollowMigrationPolicy.resolve(
+            RoomFollowMigrationPolicy.Snapshot(
+                version = version,
+                explicitMode = explicitMode,
+                explicitTarget = explicitTarget,
+                legacyDefault = legacyDefault,
+                hasLegacyEvidence = hasLegacyEvidence
+            )
+        )
+        if (decision.alreadyMigrated) {
+            return readRoomFollowPreferences(
+                snapshot,
+                explicitMode ?: error("Migrated room preferences are missing their mode"),
+                version
+            )
         }
 
         context.sonosPrefsDataStore.edit { prefs ->
             // Preserve an explicit choice if another writer made one between the
             // snapshot and this atomic migration transaction.
-            val resolvedMode = parseRoomFollowMode(prefs[KEY_ROOM_FOLLOW_MODE]) ?: mode
+            val resolvedMode = parseRoomFollowMode(prefs[KEY_ROOM_FOLLOW_MODE]) ?: decision.mode
             prefs[KEY_ROOM_FOLLOW_MODE] = resolvedMode.name
             prefs[KEY_EXPERIENCE_PREFERENCES_VERSION] = EXPERIENCE_PREFERENCES_VERSION
 
-            if (prefs[KEY_ROOM_TARGET_ID].isNullOrBlank() && legacyDefault != null) {
-                prefs[KEY_ROOM_TARGET_ID] = legacyDefault.id
-                prefs[KEY_ROOM_TARGET_NAME] = legacyDefault.name
+            if (prefs[KEY_ROOM_TARGET_ID].isNullOrBlank() && decision.target != null) {
+                prefs[KEY_ROOM_TARGET_ID] = decision.target.id
+                prefs[KEY_ROOM_TARGET_NAME] = decision.target.name
             }
         }
 

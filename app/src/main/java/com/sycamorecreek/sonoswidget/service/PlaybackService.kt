@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -22,6 +23,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 
 /**
  * Foreground service that polls a Sonos speaker for playback state
@@ -88,38 +90,65 @@ class PlaybackService : Service() {
          * Also cancels the periodic [WidgetRefreshWorker] since the
          * foreground service handles polling at much higher frequency.
          */
-        fun start(context: Context) {
-            WidgetRefreshWorker.cancel(context)
+        fun start(context: Context): Boolean {
             val intent = Intent(context, PlaybackService::class.java).apply {
                 action = ACTION_START
             }
-            context.startForegroundService(intent)
+            return try {
+                context.startForegroundService(intent)
+                WidgetRefreshWorker.cancel(context)
+                true
+            } catch (e: RuntimeException) {
+                // Android can disallow a background foreground-service start.
+                // Preserve a battery-aware recovery path rather than crashing
+                // from a widget broadcast or claiming that polling is active.
+                Log.w(TAG, "Foreground polling service start was not allowed", e)
+                WidgetRefreshWorker.schedule(context)
+                false
+            }
         }
 
         /**
          * Triggers an immediate poll cycle, resetting any backoff.
          * Call after events like OAuth login or manual IP add.
          */
-        fun pollNow(context: Context) {
+        fun pollNow(context: Context): Boolean {
             val intent = Intent(context, PlaybackService::class.java).apply {
                 action = ACTION_POLL_NOW
             }
-            context.startService(intent)
+            return try {
+                context.startService(intent)
+                true
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Immediate polling request was not allowed", e)
+                WidgetRefreshWorker.schedule(context)
+                false
+            }
         }
 
         /**
          * Stops the playback service.
          */
-        fun stop(context: Context) {
+        fun stop(context: Context): Boolean {
             val intent = Intent(context, PlaybackService::class.java).apply {
                 action = ACTION_STOP
             }
-            context.startService(intent)
+            return try {
+                context.startService(intent)
+                true
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Polling service stop request failed", e)
+                false
+            }
         }
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var pollJob: Job? = null
+    /** Coalesces loop, widget, and network-triggered refreshes into one cycle. */
+    private val pollMutex = Mutex()
+    /** A user/network request received mid-poll gets one immediate follow-up. */
+    private var pollRequested = false
 
     private lateinit var repository: SonosRepository
     private lateinit var networkReceiver: NetworkChangeReceiver
@@ -366,23 +395,36 @@ class PlaybackService : Service() {
      * Tracks consecutive disconnect failures for exponential backoff.
      */
     private suspend fun pollOnce() {
-        // Ensure we have a speaker to talk to
-        if (!repository.isConnected) {
-            val discovered = repository.discoverAndConnect()
-            if (!discovered) {
-                consecutiveDisconnects++
-                repository.pushDisconnectedState()
-                updateNotification(null)
-                return
-            }
-            // Successfully connected — reset backoff
-            consecutiveDisconnects = 0
+        if (!pollMutex.tryLock()) {
+            pollRequested = true
+            Log.d(TAG, "Poll request coalesced; one follow-up cycle is queued")
+            return
         }
+        val startedAtMs = SystemClock.elapsedRealtime()
+        try {
+            do {
+                pollRequested = false
+                pollOnceLocked()
+            } while (pollRequested)
+        } finally {
+            pollMutex.unlock()
+            Log.d(TAG, "Poll cycle completed in ${SystemClock.elapsedRealtime() - startedAtMs}ms")
+        }
+    }
 
-        // Poll and update widget state
+    private suspend fun pollOnceLocked() {
+        // The repository owns discovery and one shared refresh gate. Keeping
+        // this service to a single entry point also coalesces worker, network,
+        // companion, and user-triggered refreshes.
         val state = repository.pollAndUpdate()
 
-        // Reset backoff on successful poll
+        if (state?.connectionMode == com.sycamorecreek.sonoswidget.widget.ConnectionMode.DISCONNECTED) {
+            consecutiveDisconnects++
+            updateNotification(null)
+            return
+        }
+
+        // Reset backoff only after an actual connected refresh.
         consecutiveDisconnects = 0
 
         // Update notification with current track

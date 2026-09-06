@@ -76,17 +76,13 @@ class WidgetRefreshWorker(
         return try {
             val repo = SonosRepository.getInstance(applicationContext)
 
-            // Attempt discovery if not connected
-            if (!repo.isConnected) {
-                val discovered = repo.discoverAndConnect()
-                if (!discovered) {
-                    Log.d(TAG, "Periodic refresh: no speaker found")
-                    return Result.success()
-                }
+            // Discovery and refresh share the repository's coalescing gate, so
+            // a periodic wake cannot overlap an active service or widget tap.
+            val state = repo.pollAndUpdate()
+            if (state?.connectionMode == com.sycamorecreek.sonoswidget.widget.ConnectionMode.DISCONNECTED) {
+                Log.d(TAG, "Periodic refresh: no speaker found")
+                return Result.success()
             }
-
-            // Single poll cycle
-            repo.pollAndUpdate()
             Log.d(TAG, "Periodic refresh complete")
             Result.success()
         } catch (e: Exception) {

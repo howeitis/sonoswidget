@@ -67,14 +67,14 @@ class WifiReconnectWorker(
         return try {
             val repo = SonosRepository.getInstance(applicationContext)
 
-            if (!repo.isConnected && !repo.discoverAndConnect()) {
+            val state = repo.pollAndUpdate()
+            if (state?.connectionMode == com.sycamorecreek.sonoswidget.widget.ConnectionMode.DISCONNECTED) {
                 Log.d(TAG, "Reconnect failed — no speaker reachable yet")
                 // Re-arm: the constraint may have been satisfied by a hotspot
                 // or a Wi-Fi network that isn't home. Retry keeps us listening.
                 return Result.retry()
             }
 
-            val state = repo.pollAndUpdate()
             Log.d(TAG, "Reconnected — widget state refreshed")
 
             // If music is playing, bring the foreground service back so the
