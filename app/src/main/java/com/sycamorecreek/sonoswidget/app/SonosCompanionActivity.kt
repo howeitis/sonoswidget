@@ -261,7 +261,14 @@ class SonosCompanionActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleIntent(intent)
+        // This is a singleTask activity. A normal launcher or OAuth intent can
+        // arrive after the focused artwork fallback, so treat that fallback as
+        // scoped to the current intent rather than leaving its card stranded.
+        if (!showSonosUnavailableExplanation) {
+            requestNearbyWifiPermissionIfNeeded()
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -269,12 +276,9 @@ class SonosCompanionActivity : ComponentActivity() {
     // ──────────────────────────────────────────────
 
     private fun handleIntent(intent: Intent?) {
-        if (intent?.getBooleanExtra(EXTRA_ROOM_CHOOSER, false) == true) {
-            showRoomChooser = true
-        }
-        if (intent?.getBooleanExtra(EXTRA_SONOS_APP_UNAVAILABLE, false) == true) {
-            showSonosUnavailableExplanation = true
-        }
+        showRoomChooser = intent?.getBooleanExtra(EXTRA_ROOM_CHOOSER, false) == true
+        showSonosUnavailableExplanation =
+            intent?.getBooleanExtra(EXTRA_SONOS_APP_UNAVAILABLE, false) == true
         val data = intent?.data ?: return
 
         val isHttpsCallback = data.scheme == "https" && data.host == "sycamorecreekconsulting.com" && data.path == "/callback"
