@@ -48,6 +48,15 @@ Observed emulator evidence (API 36.1, Pixel Launcher, default font scale):
   long offline subtitle and recovery copy ellipsize. Their essential meaning
   remains visible; this is a recorded readability limitation. The scale was
   restored to 1.0× after the check.
+- A reversible 360dpi emulator override provided enough logical width to render
+  the Expanded offline bucket. The placed widget showed the reconnect affordance,
+  unobscured artwork/device placeholder, transport/volume region, and bounded
+  Up Next empty state without overlap. The emulator density was restored to its
+  original 420dpi afterward.
+- Reinstalling from a background widget update produced Android 16's expected
+  foreground-service-start denial in logs without an application crash; it is
+  not evidence of full background recovery timing and that lifecycle scenario
+  remains open.
 - The companion offline/setup screen renders without an application crash. The
   emulator briefly reported an unrelated System UI ANR; it was dismissed before
   the app and widget checks. This does not validate connected playback, room

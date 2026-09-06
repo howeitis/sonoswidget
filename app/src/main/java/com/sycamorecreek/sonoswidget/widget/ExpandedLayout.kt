@@ -415,7 +415,10 @@ private fun NowPlayingHero(
             albumArt = albumArt,
             state = state,
             size = 128.dp,
-            hasTrack = hasTrack
+            hasTrack = hasTrack,
+            // Expanded reserves visible title/subtitle and a reconnect action
+            // for status. Avoid covering meaningful artwork with duplicate copy.
+            showStatusBadge = false
         )
 
         Spacer(modifier = GlanceModifier.width(16.dp))
@@ -423,7 +426,7 @@ private fun NowPlayingHero(
         Column(modifier = GlanceModifier.defaultWeight()) {
             Text(
                 // While reconnecting, keep showing the last-known track — the
-                // subtitle and art badge carry the "Reconnecting…" signal.
+                // subtitle and dedicated status controls carry the signal.
                 text = when {
                     state.isOffline && !hasTrack -> "Offline"
                     isDisconnected && !hasTrack -> "Searching for speakers…"
