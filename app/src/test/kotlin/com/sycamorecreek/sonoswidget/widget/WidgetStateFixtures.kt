@@ -64,6 +64,23 @@ object WidgetStateFixtures {
         pendingOperations = listOf(PendingWidgetOperation("favorite-1", WidgetOperationType.LOADING_FAVORITE))
     )
     val failedCommand = playing.copy(errorMessage = "Couldn't confirm command — check status")
+    val missingArtwork = playing.copy(
+        currentTrack = playing.currentTrack.copy(artUrl = null),
+        artworkVersion = null
+    )
+    val brightArtwork = playing.copy(
+        currentTrack = playing.currentTrack.copy(
+            artUrl = "http://192.0.2.10:1400/getaa?sample=bright"
+        ),
+        artworkVersion = "bright-sample-v1",
+        colorPalette = WidgetColorPalette(
+            background = "#F6D365",
+            textPrimary = "#171717",
+            textSecondary = "#4A3A12",
+            accent = "#5C2E00",
+            chipBackground = "#FFF3C4"
+        )
+    )
     val longContent = playing.copy(
         currentTrack = Track(
             name = "An Intentionally Long Track Title That Exercises Widget Truncation",

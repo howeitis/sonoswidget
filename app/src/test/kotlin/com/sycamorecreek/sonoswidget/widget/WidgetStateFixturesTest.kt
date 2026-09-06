@@ -19,6 +19,8 @@ class WidgetStateFixturesTest {
         assertEquals(ConnectionMode.CLOUD, WidgetStateFixtures.cloud.connectionMode)
         assertTrue(WidgetStateFixtures.loadingFavorite.pendingOperations.isNotEmpty())
         assertTrue(WidgetStateFixtures.failedCommand.errorMessage != null)
+        assertEquals(null, WidgetStateFixtures.missingArtwork.currentTrack.artUrl)
+        assertEquals("bright-sample-v1", WidgetStateFixtures.brightArtwork.artworkVersion)
         assertTrue(WidgetStateFixtures.longContent.zones.size > 6)
         assertTrue(WidgetStateFixtures.longContent.favorites.size > 6)
     }
