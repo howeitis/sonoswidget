@@ -128,9 +128,9 @@ object WidgetStateStore {
         return try {
             val obj = JSONObject(json)
             SonosWidgetState(
-                playbackState = PlaybackState.valueOf(
+                playbackState = enumOrNull<PlaybackState>(
                     obj.optString("playbackState", "STOPPED")
-                ),
+                ) ?: PlaybackState.STOPPED,
                 currentTrack = deserializeTrack(obj.optJSONObject("currentTrack")),
                 activeZone = deserializeZone(obj.optJSONObject("activeZone")),
                 volume = obj.optInt("volume", 50),

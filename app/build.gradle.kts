@@ -106,4 +106,5 @@ dependencies {
     implementation(libs.lifecycle.runtime.ktx)
 
     testImplementation(libs.junit)
+    testImplementation(libs.json)
 }
