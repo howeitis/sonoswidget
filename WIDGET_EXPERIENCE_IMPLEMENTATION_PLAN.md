@@ -240,7 +240,13 @@ Acceptance: no duplicate loops; explicit user recovery initiates promptly; no st
 
 ## Phase 7 — Release validation and handoff
 
-There is currently no `app/src/test` suite or declared test dependencies in the inspected app build file. Add only the test infrastructure needed for pure state/policy and coroutine command tests. Prefer fake transports and injected clocks. Use instrumentation or an appropriate Android test environment for Android JSON/Glance behavior rather than relying on JVM Android stubs.
+The project now has a focused `app/src/test` suite covering state fixtures,
+layout policy, state mapping/persistence, and room-follow migration. Expand it
+with fake transports and an injected clock for command/reconciliation behavior;
+use instrumentation or an appropriate Android test environment for Android
+JSON/Glance behavior rather than relying on JVM Android stubs. The current
+debug unit suite has 14 passing tests; that is not a substitute for the
+remaining device, Sonos, and lifecycle scenarios below.
 
 Run from PowerShell at repository root:
 
