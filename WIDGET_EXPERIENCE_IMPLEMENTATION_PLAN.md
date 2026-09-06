@@ -42,6 +42,12 @@ Observed emulator evidence (API 36.1, Pixel Launcher, default font scale):
   observation so the artwork/device affordance remains unobscured. This
   emulator's four-column launcher grid could not reach the 400dp width required
   to exercise the Expanded bucket.
+- At 1.3× system font scale, the Compact offline state remained readable with
+  no clipped controls or recovery copy. The scale was restored to 1.0× after
+  the check. At 2.0×, primary controls still fit and do not overlap, but the
+  long offline subtitle and recovery copy ellipsize. Their essential meaning
+  remains visible; this is a recorded readability limitation. The scale was
+  restored to 1.0× after the check.
 - The companion offline/setup screen renders without an application crash. The
   emulator briefly reported an unrelated System UI ANR; it was dismissed before
   the app and widget checks. This does not validate connected playback, room
