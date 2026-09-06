@@ -50,7 +50,8 @@ fun AlbumArtWithBadge(
     albumArt: Bitmap?,
     state: SonosWidgetState,
     size: Dp,
-    hasTrack: Boolean
+    hasTrack: Boolean,
+    showStatusBadge: Boolean = true
 ) {
     val cornerRadius = if (size >= 100.dp) 18.dp else 14.dp
     Box(
@@ -94,7 +95,7 @@ fun AlbumArtWithBadge(
 
         // Pill badge overlay (bottom-center of album art)
         val badge = state.activeBadge
-        if (badge != StatusBadgeType.NONE) {
+        if (showStatusBadge && badge != StatusBadgeType.NONE) {
             Box(
                 modifier = GlanceModifier.size(size).padding(6.dp),
                 contentAlignment = Alignment.BottomCenter

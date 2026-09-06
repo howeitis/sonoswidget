@@ -31,6 +31,17 @@ Still requires a real device/emulator and, where applicable, a Sonos household:
   current log timing is instrumentation only; it is not launcher-visible latency
   proof.
 
+Observed emulator evidence (API 36.1, Pixel Launcher, default font scale):
+
+- The picker recognizes the 3×1 provider preview, and the placed Mini widget
+  renders its searching and settled offline states without clipped primary
+  controls. An initially observed offline badge/art overlap was corrected by
+  keeping Mini status in its dedicated text area rather than duplicating a badge.
+- The companion offline/setup screen renders without an application crash. The
+  emulator briefly reported an unrelated System UI ANR; it was dismissed before
+  the app and widget checks. This does not validate connected playback, room
+  lists, alternate widget sizes, font scaling, or real Sonos behavior.
+
 ## Objective
 
 Deliver a calmer, sharper widget with predictable room targeting, comfortable controls, immediate interaction feedback, and truthful recovery states. Preserve local Sonos control and cloud fallback. Build on the existing Glance layouts and optimistic playback/volume updates.

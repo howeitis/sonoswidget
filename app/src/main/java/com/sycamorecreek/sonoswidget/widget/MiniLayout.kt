@@ -53,7 +53,10 @@ fun MiniLayout(
                 albumArt = albumArt,
                 state = state,
                 size = 56.dp,
-                hasTrack = hasTrack
+                hasTrack = hasTrack,
+                // Mini already dedicates its two text lines to status and room.
+                // Repeating a badge over 56dp art obscures the device affordance.
+                showStatusBadge = false
             )
 
             Spacer(modifier = GlanceModifier.width(10.dp))
