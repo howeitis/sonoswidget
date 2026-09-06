@@ -153,6 +153,7 @@ class SonosCompanionActivity : ComponentActivity() {
     private var isScanning by mutableStateOf(false)
     private var scanMessage by mutableStateOf<String?>(null)
     private var showRoomChooser by mutableStateOf(false)
+    private var showSonosUnavailableExplanation by mutableStateOf(false)
 
     private val scope = CoroutineScope(Dispatchers.Main)
 
@@ -179,7 +180,12 @@ class SonosCompanionActivity : ComponentActivity() {
         isLoggedIn = tokenStore.isLoggedIn
 
         handleIntent(intent)
-        requestNearbyWifiPermissionIfNeeded()
+        // The artwork fallback is a focused, low-friction explanation. Do not
+        // obscure its explicit Back/Get Sonos actions with an unrelated local
+        // discovery permission request.
+        if (!showSonosUnavailableExplanation) {
+            requestNearbyWifiPermissionIfNeeded()
+        }
         loadSettings()
 
         setContent {
@@ -235,7 +241,9 @@ class SonosCompanionActivity : ComponentActivity() {
                             onClearCache = ::clearImageCache,
                             onRefreshWidget = ::refreshWidget,
                             showRoomChooser = showRoomChooser,
-                            onSwitchRoom = ::switchRoom
+                            onSwitchRoom = ::switchRoom,
+                            showSonosUnavailableExplanation = showSonosUnavailableExplanation,
+                            onDismissSonosUnavailableExplanation = ::dismissSonosUnavailableExplanation
                         )
                     }
                 }
@@ -265,7 +273,7 @@ class SonosCompanionActivity : ComponentActivity() {
             showRoomChooser = true
         }
         if (intent?.getBooleanExtra(EXTRA_SONOS_APP_UNAVAILABLE, false) == true) {
-            scanMessage = "Sonos isn't installed or couldn't be opened. Get it below."
+            showSonosUnavailableExplanation = true
         }
         val data = intent?.data ?: return
 
@@ -531,6 +539,11 @@ class SonosCompanionActivity : ComponentActivity() {
         }
     }
 
+    private fun dismissSonosUnavailableExplanation() {
+        showSonosUnavailableExplanation = false
+        finish()
+    }
+
     private fun updateRoomFollowMode(mode: SonosPreferences.RoomFollowMode) {
         roomFollowMode = mode
         if (mode == SonosPreferences.RoomFollowMode.FOLLOW_PLAYING_MUSIC) {
@@ -683,7 +696,9 @@ private fun CompanionScreen(
     onClearCache: () -> Unit,
     onRefreshWidget: () -> Unit,
     showRoomChooser: Boolean,
-    onSwitchRoom: (Zone) -> Unit
+    onSwitchRoom: (Zone) -> Unit,
+    showSonosUnavailableExplanation: Boolean,
+    onDismissSonosUnavailableExplanation: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -717,6 +732,14 @@ private fun CompanionScreen(
         NowPlayingCard(state = state, onOpenSonos = onOpenSonos, onGetSonos = onGetSonos)
 
         Spacer(modifier = Modifier.height(14.dp))
+
+        if (showSonosUnavailableExplanation) {
+            SonosUnavailableCard(
+                onGetSonos = onGetSonos,
+                onBack = onDismissSonosUnavailableExplanation
+            )
+            Spacer(modifier = Modifier.height(14.dp))
+        }
 
         if (showRoomChooser) {
             RoomChooserCard(state = state, onSwitchRoom = onSwitchRoom)
@@ -1296,6 +1319,38 @@ private fun ChecklistRow(label: String, ok: Boolean) {
             text = label,
             style = MaterialTheme.typography.bodySmall
         )
+    }
+}
+
+@Composable
+private fun SonosUnavailableCard(
+    onGetSonos: () -> Unit,
+    onBack: () -> Unit
+) {
+    SectionCard(title = "Open Sonos") {
+        Text(
+            text = "Sonos isn't installed or couldn't be opened. Install it to browse and manage your system.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Back")
+            }
+            Button(
+                onClick = onGetSonos,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Get Sonos")
+            }
+        }
     }
 }
 

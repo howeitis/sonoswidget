@@ -57,6 +57,17 @@ Observed emulator evidence (API 36.1, Pixel Launcher, default font scale):
   foreground-service-start denial in logs without an application crash; it is
   not evidence of full background recovery timing and that lifecycle scenario
   remains open.
+- With neither Sonos package installed, tapping widget artwork opened a focused
+  companion explanation with explicit Get Sonos and Back actions. The focused
+  route now defers the unrelated Nearby Devices permission prompt so those
+  actions are not obscured. The Back button was visually verified; an old
+  permission-controller prompt from the pre-fix run interrupted its behavioral
+  check, so its return-to-launcher behavior should be rechecked in a clean
+  session.
+- A forced app stop temporarily replaced the widget RemoteViews with Android's
+  default provider placeholder. Restarting the companion repopulated the cached
+  offline widget state safely. This is a force-stop observation, not a complete
+  ordinary process-death or background-recovery validation.
 - The companion offline/setup screen renders without an application crash. The
   emulator briefly reported an unrelated System UI ANR; it was dismissed before
   the app and widget checks. This does not validate connected playback, room
