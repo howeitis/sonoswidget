@@ -37,6 +37,11 @@ Observed emulator evidence (API 36.1, Pixel Launcher, default font scale):
   renders its searching and settled offline states without clipped primary
   controls. An initially observed offline badge/art overlap was corrected by
   keeping Mini status in its dedicated text area rather than duplicating a badge.
+- Resizing the placed widget produced the Compact offline state with readable
+  controls and recovery copy. Its similarly redundant badge was removed after
+  observation so the artwork/device affordance remains unobscured. This
+  emulator's four-column launcher grid could not reach the 400dp width required
+  to exercise the Expanded bucket.
 - The companion offline/setup screen renders without an application crash. The
   emulator briefly reported an unrelated System UI ANR; it was dismissed before
   the app and widget checks. This does not validate connected playback, room

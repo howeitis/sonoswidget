@@ -79,7 +79,10 @@ fun CompactLayout(
                     albumArt = albumArt,
                     state = state,
                     size = 86.dp,
-                    hasTrack = hasTrack
+                    hasTrack = hasTrack,
+                    // Compact has a dedicated title, subtitle, and recovery
+                    // area; a second badge at this size hides the art/icon.
+                    showStatusBadge = false
                 )
 
                 Spacer(modifier = GlanceModifier.width(12.dp))
@@ -88,7 +91,7 @@ fun CompactLayout(
                     // Track name
                     Text(
                         // While reconnecting, keep showing the last-known track —
-                        // the subtitle and art badge carry the status signal.
+                        // the title/subtitle area carries the status signal.
                         text = when {
                             state.isOffline && !hasTrack -> "Offline"
                             isDisconnected && !hasTrack -> "Searching for speakers…"
