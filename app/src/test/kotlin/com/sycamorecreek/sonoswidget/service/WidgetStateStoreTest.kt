@@ -49,7 +49,7 @@ class WidgetStateStoreTest {
     }
 
     @Test
-    fun `process restart clears transient operations but preserves confirmed state`() {
+    fun `display serialization round trip preserves pending operations`() {
         val original = SonosWidgetState(
             playbackState = PlaybackState.PLAYING,
             currentTrack = Track(name = "Confirmed track", durationMs = 123_000L),
@@ -74,6 +74,27 @@ class WidgetStateStoreTest {
         assertTrue(restored.capabilities.canGroup)
         assertEquals(42L, restored.lastEssentialRefreshMs)
         assertTrue(restored.isContentStale)
-        assertTrue(restored.pendingOperations.isEmpty())
+        assertEquals(original.pendingOperations, restored.pendingOperations)
+    }
+
+    @Test
+    fun `process recovery explicitly clears transient operations`() {
+        val original = SonosWidgetState(
+            playbackState = PlaybackState.PLAYING,
+            pendingOperations = listOf(
+                PendingWidgetOperation(
+                    id = "favorite-1",
+                    type = WidgetOperationType.LOADING_FAVORITE,
+                    targetId = "kitchen"
+                )
+            )
+        )
+
+        val recovered = WidgetStateStore.deserializeForProcessRecovery(
+            WidgetStateStore.serialize(original)
+        )
+
+        assertEquals(PlaybackState.PLAYING, recovered.playbackState)
+        assertTrue(recovered.pendingOperations.isEmpty())
     }
 }

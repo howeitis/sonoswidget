@@ -1,8 +1,294 @@
-# Sonos Widget experience improvement plan
+# Sonos Widget — complete coding-team handoff
 
-Status: implementation in progress. The code-side phases below have been applied
-in reviewable batches; device and household validation remains open.
-Prepared: 2026-09-05.
+Updated: 2026-09-06. Scope: finish the experience improvements, fix review findings,
+upgrade AGP and related build plugins, and adopt Gradle daemon JVM criteria.
+
+This document is the full handoff. The new work packages below take precedence
+over earlier completion claims and build instructions. Retain working features;
+do not restart the original implementation. Original product decisions, phase
+details and device observations follow as continuing requirements and history.
+This revision changes the plan only; it does not perform the build migration.
+
+## Current review baseline
+
+Review reference: `acac78c` (recheck HEAD and user changes before implementing).
+Observed locally on 2026-09-06:
+
+- `testDebugUnitTest`: 14 tests passed, covering migration, mapper, persistence,
+  layout policy and fixtures. There are no repository command-ordering tests.
+- `assembleDebug`: succeeded using installed JDK 21.
+- `lintDebug`: FAILED with 6 errors and 94 warnings. The six errors are
+  `UseAppTint` in `widget_loading.xml` and `widget_preview.xml`, introduced by
+  the replacement of text symbols with ImageViews. Previous statements that
+  lint passed are historical, not the current acceptance result.
+- Android Studio's bundled JBR on this machine is JDK 25.0.2; the documented
+  JAVA_HOME command fails before compilation with the existing Gradle setup.
+- The runtime/concurrency findings below are source-grounded. They were not
+  reproduced against a Sonos household. Earlier emulator observations mainly
+  cover offline states, not populated connected playback.
+
+## Delivery order and completion rules
+
+1. **B1:** upgrade the compatible build stack and adopt daemon JVM criteria.
+2. **B2:** establish a green lint/test/build gate in local builds and CI.
+3. **R1–R5:** fix display state, targeting, reconciliation, outcomes and volume;
+   add failing regression tests before the corresponding fixes.
+4. **U1:** correct the expanded layout's minimum-size budget and validate it.
+5. Complete the remaining original phase acceptance criteria and publish evidence.
+
+Use separate reviewable commits for build migration, lint/CI, reliability, and
+layout. No plugin upgrade or UI screenshot establishes that runtime reliability
+is complete. Do not mark a package done without its acceptance evidence. Keep
+the existing SDK levels (compile/target 36, minimum 35) and Glance version unless
+a concrete migration dependency requires a separately documented change.
+
+## B1 — AGP upgrade and daemon JVM toolchain migration
+
+### Proposed version contract
+
+These are concrete starting pins researched on 2026-09-06, not a claim that the
+entire combination has already been built in this repository. Verify artifact
+availability and plugin compatibility at implementation, then record the exact
+resolved versions in the completion report. Use fixed releases, never `+`,
+`latest`, snapshots or preview versions. If a pin cannot be used, identify the
+actual incompatibility and use a documented compatible stable alternative;
+do not quietly abandon the AGP upgrade or leave compatibility opt-outs forever.
+
+| Component | Existing | Planned result |
+|---|---|---|
+| Android Gradle plugin | 8.10.1 | 9.4.0 |
+| Gradle wrapper | 8.11.1 | 9.6.0, the documented AGP 9.4 pairing |
+| Daemon JVM | inherited from local/IDE JAVA_HOME | Java 21, Adoptium/Temurin, repository criteria |
+| Java/Kotlin bytecode | 17 | retain 17 explicitly |
+| Kotlin Android plugin | external 2.1.21 | AGP built-in Kotlin; remove redundant Android plugin |
+| Compose compiler plugin | 2.1.21 | pin to the effective supported Kotlin compiler version |
+| KSP | 2.1.21-2.0.1 | KSP2, candidate 2.3.11; validate generated sources |
+| Hilt plugin/runtime/compiler | 2.58 | candidate 2.59.2, all three kept aligned |
+
+AGP 9.4 documents Gradle 9.6.0 and a minimum JDK 17. Java 21 is this project's
+chosen daemon policy, not an AGP requirement. Check Android Studio compatibility
+as well: the published table lists Quail 4 (2026.1.4) for AGP through 9.4.
+Sources: [AGP 9.4 release notes](https://developer.android.com/build/releases/agp-9-4-0-release-notes),
+[AGP/Gradle/Studio compatibility](https://developer.android.com/build/releases/about-agp).
+Candidate plugin releases: [Hilt/Dagger 2.59.2](https://github.com/google/dagger/releases/tag/dagger-2.59.2),
+[KSP 2.3.11](https://github.com/google/ksp/releases/tag/2.3.11).
+
+### Build-script changes
+
+Files: `gradle/libs.versions.toml`, `build.gradle.kts`, `app/build.gradle.kts`,
+`settings.gradle.kts`, `gradle.properties`, all wrapper files, new
+`gradle/gradle-daemon-jvm.properties`, `.github/workflows/android-build.yml`,
+`AGENTS.md`, `README.md` and this document's completion record.
+
+1. Capture existing test/build output with a working JDK 21 before changing
+   versions. Preserve the current lint failure as a baseline, not a waiver.
+2. Upgrade AGP and wrapper as a coordinated change. Regenerate the wrapper
+   scripts/JAR using the wrapper task; commit them with its properties and
+   official distribution SHA-256 checksum. Do not change only the URL and call
+   wrapper migration complete. Bootstrap with a supported installed JVM when
+   old build scripts cannot configure under the new Gradle version.
+3. Migrate to built-in Kotlin: remove `libs.plugins.kotlin.android` from root,
+   app and catalog; replace `android.kotlinOptions` with supported
+   `kotlin.compilerOptions`. Keep Compose compiler applied and pin it according
+   to the effective Kotlin version resolved by AGP, not the obsolete catalog
+   value. Do not infer Kotlin's version from KSP's version number. Remove any
+   temporary built-in-Kotlin/new-DSL opt-out before completion. Follow the
+   [official Kotlin migration guide](https://developer.android.com/build/migrate-to-built-in-kotlin).
+4. Upgrade Hilt plugin/runtime/compiler together and use supported KSP2. Confirm
+   Hilt generated components, test code, BuildConfig and Compose compile from
+   clean outputs. Audit AGP DSL/source-set changes, including the manual
+   `src/test/kotlin` registration; keep all existing tests discovered exactly once.
+5. Keep Java source/target compatibility and Kotlin JVM target at 17. Configure
+   the compilation toolchain explicitly where needed using the supported AGP/
+   Kotlin DSL; using JDK 21 tools must not silently change emitted bytecode to 21.
+   The daemon JVM and compile target are separate settings. Preserve the
+   configuration-cache setting for this migration; reassess its old explanatory
+   comment instead of making an unrelated performance change.
+
+### Daemon criteria and provisioning
+
+Generate and commit `gradle/gradle-daemon-jvm.properties` with:
+
+```powershell
+.\gradlew.bat updateDaemonJvm --jvm-version=21 --jvm-vendor=adoptium
+```
+
+Configure a pinned supported toolchain resolver in settings when needed for URL
+generation. Generate real provisioning URLs for Windows x64 and Linux x64 (the
+current desktop/CI), plus macOS x64/ARM64 if supported by the resolver. No fake
+URLs or machine-local paths. Criteria take precedence over JAVA_HOME and
+`org.gradle.java.home`; a compatible launcher Java is still needed to start the
+wrapper. Provisioning requires network access, or a matching preinstalled JDK
+for offline use. Record that this pins a major version/vendor, not necessarily
+identical patches across machines. Source:
+[Gradle daemon JVM criteria](https://docs.gradle.org/current/userguide/gradle_daemon.html#sec:daemon_jvm_criteria).
+
+Stop old daemons and verify a real task uses Temurin 21. Capture `--version` and
+daemon-selection/build logs; do not mistake launcher Java for daemon Java.
+Test both an installed matching JDK and provisioning with an isolated temporary
+Gradle user home; do not delete a developer's caches. Verify selection when the
+launcher points at another wrapper-supported Java version. Do not edit global
+JAVA_HOME, user Gradle properties or unrelated IDE projects. Replace the old
+hardcoded Android Studio JBR build instruction with wrapper-based instructions
+and one-time supported-Java bootstrap guidance.
+
+B1 acceptance: clean Windows build and Linux CI use the chosen daemon criteria;
+IDE sync succeeds on a compatible Studio; bytecode remains 17; Hilt/KSP/Compose
+and all existing tests compile; committed configuration contains no workstation
+paths; first-run provisioning/offline setup is documented. A working local JDK
+path in a command is not completion of this migration.
+
+## B2 — Restore lint and CI as release gates
+
+1. Resolve all six current tint errors in `app/src/main/res/layout/widget_loading.xml`
+   and `widget_preview.xml`. These are widget resources: do not blindly replace
+   platform views/attributes with AppCompat-only behavior. Prefer drawable-level
+   tinting or, if the lint rule is inapplicable to a specific RemoteViews resource,
+   narrowly scoped suppression with rationale and rendered verification. No
+   blanket baseline or `abortOnError=false` to hide failures.
+2. Triage warnings into introduced issues versus existing debt. Fix correctness,
+   accessibility and build-migration warnings introduced by this work; record
+   justified remaining warnings and counts. Verify lint on the new AGP, whose
+   checks may differ from the old baseline.
+3. Update CI's JDK setup from 17 to Temurin 21 to match daemon criteria. Retain
+   a usable launcher Java, existing read-only permissions and wrapper execution.
+   Update Gradle setup action only if required for the selected Gradle release.
+4. CI currently runs assemble and tests but omits lint. Require
+   `testDebugUnitTest lintDebug assembleDebug`; publish test/lint reports even
+   on failure and the APK only after gates pass. Preserve wrapper checksums and
+   use appropriate wrapper validation. No OAuth credentials are needed to
+   compile the debug build; do not introduce secrets into build logs.
+
+B2 acceptance: the complete command succeeds locally and in CI, and the report
+contains actual test totals, lint counts and versions. Update the historical
+“all checks passed” claim only after observing a current passing run.
+
+## R1 — Preserve pending state during normal display decoding (P1)
+
+Evidence: `service/WidgetStateStore.kt` sets `pendingOperations = emptyList()` in
+the decoder used by `widget/SonosWidget.kt` on every render. This prevents normal
+Switching room, Preparing favorite and grouping feedback from reaching layouts.
+
+Separate display serialization from process-start recovery. Normal display
+decoding must retain pending operations. Repository recovery must deliberately
+clear/reconcile operations from an earlier session using a session identity or
+equivalent explicit lifecycle policy. Polling must merge active operations, not
+drop a still-running favorite/grouping request when building a fresh state.
+
+Tests: live serialization round-trip preserves operations; an actual recovery
+path clears obsolete operations; an ordinary poll during slow favorite loading
+does not clear loading state; widget fixtures exercise decoded state, not just
+directly constructed model objects. Replace the misleading test that labels
+every deserialize call a process restart.
+
+## R2 — Bind actions and grouping drafts to their original room (P1)
+
+Evidence: `widget/WidgetActions.kt:canDispatch` checks availability but not the
+rendered target. `ApplyGroupingDraftAction` stores/reads only a set of speaker
+IDs; `data/SonosRepository.kt:applyGroupingDraft` applies it to the current room.
+
+Include expected target ID/generation in action parameters and draft state;
+carry that identity into the repository and validate before dispatch. Invalidate
+drafts on shared-target change across all widget instances. Capture destination
+before suspension, not after topology fetch or optimistic publication. Reject
+stale callbacks even after switching has completed and controls are available.
+Guard a grouping operation against a target change during execution; refreshing
+topology alone is not proof the draft belongs to that destination.
+
+Tests: delayed A-screen tap after B is confirmed sends no command to B; A's
+grouping draft cannot apply to B; switching while topology loads cannot retarget
+the operation; both widget instances display one consistent target and recovery.
+
+## R3 — Protect newer intent from enrichment and old rollbacks (P1)
+
+Evidence: `pollLocal()` applies optimism before essential publication, then
+publishes its old snapshot again after enrichment. Its target-generation check
+does not detect newer actions within the same room. Failure rollback likewise
+does not verify per-field operation ownership.
+
+Introduce a single controlled state-mutation path with field revisions and
+operation ownership. Merge queue/artwork enrichment into current state only
+when its destination/media identity remains valid. Older failures may restore
+only fields they still own, never the whole prior snapshot. Scope optimism to
+destination and invalidate it on room changes. Publish widget state in revision
+order so concurrent publishers cannot leave different instances on older state.
+
+Tests: pause during delayed artwork stays paused; older mute/play failure cannot
+undo newer success; room-A optimism cannot leak into B; delayed publication to
+two widgets cannot overwrite a newer revision. Reapplying a fixed two-second
+override before the final write is not an adequate substitute for ownership.
+
+## R4 — Preserve unknown outcomes from the transport upward (P1)
+
+Evidence: `sonos/local/SonosSoapClient.kt` catches IOException and returns null;
+`SonosControlActions.kt` converts null to false; repository interprets false as
+DEFINITE_FAILURE. A lost response after execution therefore bypasses the new
+UNKNOWN handling and can incorrectly roll back state.
+
+Return structured transport outcomes and retain them through controller and
+repository layers. Distinguish explicit SOAP rejection from timeout/lost
+response. Do not replay ambiguous skip/favorite/grouping requests. Preserve
+coroutine cancellation and cancel the underlying call appropriately. Apply
+operation-appropriate deadlines, including slow playlist operations.
+
+Tests: speaker accepts command but response times out => UNKNOWN and reconcile,
+not rollback/replay; explicit SOAP rejection => definite failure; cancellation
+does not become ordinary failure; slow accepted favorite does not duplicate its
+queue insertion. Test at the transport boundary as well as the repository fake.
+
+## R5 — Keep volume intent responsive under slow reconciliation (P2)
+
+Evidence: `adjustVolume()` holds `volumeIntentMutex` across `setVolume()`, which
+awaits command and full refresh. Later taps wait behind unrelated enrichment.
+
+Use a short critical section to accumulate/clamp desired volume and publish it
+immediately. Drain/coalesce unsent absolute targets per destination outside that
+lock; reconciliation and artwork must not block receipt of further intent. Keep
+acknowledged, desired and in-flight values distinct. Room changes invalidate
+unsent old-target intent rather than applying it to the new room.
+
+Tests: five +5 taps at 50 request/display 75 before releasing a blocked refresh,
+and ultimately converge to 75; alternating taps/clamps work; destination change
+does not reroute queued volume; older failures preserve newer desired volume.
+
+## U1 — Validate connected Expanded at its real minimum size (P1)
+
+Evidence: 400×340dp is still offered; 128dp artwork, 60dp transport, volume,
+progress, header and spacing require roughly 460dp before secondary content.
+Room selection/error content still adds rows above the player. This is a
+source-derived space budget; offline screenshots omit important playing rows.
+
+Implement the original phase 4 hierarchy with a measured height budget. Reduce
+or rearrange fixed content, or raise the expanded bucket's minimum; do not
+advertise 340dp while hoping the launcher compresses it. Reserve a fixed player
+region and one bounded secondary region. Room/group editors replace secondary
+content rather than pushing controls down. Overflow requires a reachable list
+or focused companion surface; truncating room choices alone is not completion.
+
+Validate populated local playback at exact minimum width/height, with progress,
+queue/favorites, an error, room selector, grouping editor and large fonts. Add
+render-based checks or repeatable device fixtures, not only bucket threshold
+unit tests. Verify actual 48dp action targets: Expanded currently retains 40dp
+volume buttons and 40×32dp seek targets. Preserve defensive undersized handling.
+
+## Final review checklist for the next delivery
+
+- All B/R/U packages above have evidence and focused regression tests.
+- Existing product decisions and original acceptance criteria below remain met.
+- Run clean tests/lint/debug assembly after build migration, then the final
+  incremental command after runtime/UI work. Document any release-variant smoke
+  check without changing signing or publishing anything.
+- Record daemon JDK, wrapper, AGP, Kotlin/Compose, KSP and Hilt versions; test and
+  lint reports; populated launcher screenshots; timing results; unverified
+  household scenarios and any remaining lifecycle limitations.
+- Update `AGENTS.md`/README for the actual build contract and remove obsolete
+  debounce/size/polling comments where touched. Do not retain claims of completed
+  command-ordering protection without its behavior tests.
+
+## Historical implementation checkpoint and original product plan
+
+The sections below preserve the original intent and prior observations. Their
+completion labels are superseded by the 2026-09-06 review and work packages above.
 
 ## Implementation checkpoint (2026-09-05)
 
@@ -83,7 +369,7 @@ Read `AGENTS.md` before implementation. Paths below are relative to the reposito
 
 ## Scope and product defaults
 
-Implement phases 0–7 in order, as independently reviewable changes. Finish each phase's checks before proceeding. Do not turn this into a framework migration or a wholesale repository rewrite.
+Use the B1/B2/R1–R5/U1 delivery order above for the remaining work. Phases 0–7 below remain the original feature acceptance specification; preserve completed work and finish unmet criteria. The AGP/built-in-Kotlin migration in B1 is explicitly in scope. Do not turn it into an unrelated application framework migration or a wholesale repository rewrite.
 
 Adopt these defaults so implementation can proceed without routine clarification:
 
@@ -248,10 +534,12 @@ JSON/Glance behavior rather than relying on JVM Android stubs. The current
 debug unit suite has 14 passing tests; that is not a substitute for the
 remaining device, Sonos, and lifecycle scenarios below.
 
-Run from PowerShell at repository root:
+After B1, run from PowerShell at repository root with a supported launcher Java
+available. The committed daemon criteria select Java 21; do not add the old
+hardcoded Android Studio JBR override:
 
 ```powershell
-$env:JAVA_HOME = 'C:/Program Files/Android/Android Studio/jbr'
+.\gradlew.bat --version
 .\gradlew.bat testDebugUnitTest lintDebug assembleDebug
 ```
 
@@ -294,4 +582,4 @@ Consult current official documentation before adopting APIs; newer examples may 
 
 ## Suggested implementation-agent starting instruction
 
-“Implement `WIDGET_EXPERIENCE_IMPLEMENTATION_PLAN.md` in this repository. Read `AGENTS.md`, preserve existing user changes, and follow phases 0–7 with their tests and acceptance criteria. Use the documented product defaults. Make reviewable incremental changes, preserve local/cloud functionality, and report observed versus unverified behavior accurately. Do not stop after a cosmetic restyle; complete the state, command, layout and recovery work within the stated scope.”
+“Implement the remaining work in `WIDGET_EXPERIENCE_IMPLEMENTATION_PLAN.md`. Read `AGENTS.md` and preserve existing user changes. Start with B1 (AGP/build-plugin upgrade and checked-in daemon JVM criteria), then B2 (lint/CI), R1–R5 (review fixes with regression tests), and U1 (connected layout validation). Preserve completed experience features and satisfy the original product decisions and remaining phase criteria. Use fixed compatible tool versions, retain SDK/bytecode targets as specified, and make reviewable incremental changes. Report actual build/test/lint results, resolved versions, device evidence and unverified household scenarios. Do not mark source-inferred or untested behavior as validated.”

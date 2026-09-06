@@ -1,5 +1,6 @@
 package com.sycamorecreek.sonoswidget.widget
 
+import com.sycamorecreek.sonoswidget.service.WidgetStateStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -23,5 +24,14 @@ class WidgetStateFixturesTest {
         assertEquals("bright-sample-v1", WidgetStateFixtures.brightArtwork.artworkVersion)
         assertTrue(WidgetStateFixtures.longContent.zones.size > 6)
         assertTrue(WidgetStateFixtures.longContent.favorites.size > 6)
+    }
+
+    @Test
+    fun `loading fixture retains feedback through the widget display decoder`() {
+        val decoded = WidgetStateStore.deserialize(
+            WidgetStateStore.serialize(WidgetStateFixtures.loadingFavorite)
+        )
+
+        assertEquals(WidgetOperationType.LOADING_FAVORITE, decoded.pendingOperations.single().type)
     }
 }

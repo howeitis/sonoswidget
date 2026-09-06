@@ -124,6 +124,11 @@ object WidgetStateStore {
         }.toString()
     }
 
+    /**
+     * Decodes state for an existing widget render. Pending operations are part of
+     * the display contract: Glance can read this value several times while the
+     * same process is still executing a favorite or grouping request.
+     */
     fun deserialize(json: String): SonosWidgetState {
         return try {
             val obj = JSONObject(json)
@@ -156,10 +161,7 @@ object WidgetStateStore {
                 isRateLimited = obj.optBoolean("isRateLimited", false),
                 isOffline = obj.optBoolean("isOffline", false),
                 isUpdating = obj.optBoolean("isUpdating", false),
-                // Operations describe in-flight intent, not confirmed playback.
-                // A process restart cannot know whether the request reached the
-                // speaker, so reconciliation starts with no active operation.
-                pendingOperations = emptyList(),
+                pendingOperations = deserializeOperations(obj.optJSONArray("pendingOperations")),
                 capabilities = deserializeCapabilities(obj.optJSONObject("capabilities")),
                 lastEssentialRefreshMs = obj.optLong("lastEssentialRefreshMs", 0L),
                 isContentStale = obj.optBoolean("isContentStale", false),
@@ -317,6 +319,14 @@ object WidgetStateStore {
             )
         }
     }
+
+    /**
+     * Recovery is an explicit lifecycle policy, separate from ordinary widget
+     * rendering. A new repository cannot safely resume a persisted request, so
+     * it starts reconciliation without displaying it as still in-flight.
+     */
+    fun deserializeForProcessRecovery(json: String): SonosWidgetState =
+        deserialize(json).copy(pendingOperations = emptyList())
 
     private fun serializeCapabilities(capabilities: WidgetCapabilities): JSONObject = JSONObject().apply {
         put("canPlayPause", capabilities.canPlayPause)

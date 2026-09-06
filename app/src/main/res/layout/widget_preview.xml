@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#1E1E2E"
@@ -13,13 +14,15 @@
         android:layout_height="80dp"
         android:background="@drawable/preview_album_art_bg">
 
+        <!-- RemoteViews inflates framework ImageView; app:tint would require AppCompat. -->
         <ImageView
             android:layout_width="28dp"
             android:layout_height="28dp"
             android:layout_gravity="center"
             android:contentDescription="@null"
             android:src="@drawable/ic_music_note"
-            android:tint="#FFFFFF" />
+            android:tint="#FFFFFF"
+            tools:ignore="UseAppTint" />
 
     </FrameLayout>
 
@@ -64,7 +67,8 @@
                 android:layout_height="24dp"
                 android:contentDescription="@null"
                 android:src="@drawable/ic_skip_previous"
-                android:tint="#FFFFFF" />
+                android:tint="#FFFFFF"
+                tools:ignore="UseAppTint" />
 
             <ImageView
                 android:layout_width="28dp"
@@ -72,7 +76,8 @@
                 android:layout_marginStart="16dp"
                 android:contentDescription="@null"
                 android:src="@drawable/ic_pause"
-                android:tint="#FFFFFF" />
+                android:tint="#FFFFFF"
+                tools:ignore="UseAppTint" />
 
             <ImageView
                 android:layout_width="24dp"
@@ -80,7 +85,8 @@
                 android:layout_marginStart="16dp"
                 android:contentDescription="@null"
                 android:src="@drawable/ic_skip_next"
-                android:tint="#FFFFFF" />
+                android:tint="#FFFFFF"
+                tools:ignore="UseAppTint" />
 
         </LinearLayout>
 
@@ -97,7 +103,8 @@
                 android:layout_height="16dp"
                 android:contentDescription="@null"
                 android:src="@drawable/ic_volume_up"
-                android:tint="#B0B0C0" />
+                android:tint="#B0B0C0"
+                tools:ignore="UseAppTint" />
 
             <TextView
                 android:layout_width="wrap_content"
