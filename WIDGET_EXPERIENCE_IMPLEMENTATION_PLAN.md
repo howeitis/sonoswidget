@@ -60,10 +60,10 @@ Observed emulator evidence (API 36.1, Pixel Launcher, default font scale):
 - With neither Sonos package installed, tapping widget artwork opened a focused
   companion explanation with explicit Get Sonos and Back actions. The focused
   route now defers the unrelated Nearby Devices permission prompt so those
-  actions are not obscured. The Back button was visually verified; an old
-  permission-controller prompt from the pre-fix run interrupted its behavioral
-  check, so its return-to-launcher behavior should be rechecked in a clean
-  session.
+  actions are not obscured. The Back button was visually verified. A fresh
+  behavioral recheck after reboot was blocked by a recurring emulator System
+  UI ANR; its return-to-launcher behavior remains a manual-device validation
+  item rather than a passed emulator check.
 - A forced app stop temporarily replaced the widget RemoteViews with Android's
   default provider placeholder. Restarting the companion repopulated the cached
   offline widget state safely. This is a force-stop observation, not a complete
