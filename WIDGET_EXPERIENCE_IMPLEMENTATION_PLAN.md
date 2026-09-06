@@ -1,7 +1,35 @@
 # Sonos Widget experience improvement plan
 
-Status: implementation handoff; application code has not been changed.
+Status: implementation in progress. The code-side phases below have been applied
+in reviewable batches; device and household validation remains open.
 Prepared: 2026-09-05.
+
+## Implementation checkpoint (2026-09-05)
+
+Completed in code and unit tests:
+
+- Versioned room-follow migration, explicit room behavior, per-widget disclosure
+  preferences, and shared-target switching feedback.
+- Explicit operation, freshness, capability, and artwork-version state contracts;
+  backward-compatible persistence that drops transient operations on restart.
+- Command reconciliation and refresh coalescing, capability enforcement, bounded
+  artwork caching, and a foreground-service fallback for disallowed starts.
+- Mini/compact/expanded layout policy boundary tests, corrected advertised minimum
+  size, bounded widget room lists, and a focused companion room chooser for
+  overflow.
+- Fixture coverage for representative playback, connection, capability, error,
+  and long-content states. `testDebugUnitTest`, `lintDebug`, and `assembleDebug`
+  have passed during implementation.
+
+Still requires a real device/emulator and, where applicable, a Sonos household:
+
+- Launcher screenshots and touch/overflow checks at boundary sizes, font scales,
+  and bright/dark artwork.
+- Local coordinator, surround, grouping, cloud, permission, network recovery,
+  process-death, and idle lifecycle scenarios.
+- Measured interaction/recovery timings and final before/after evidence. The
+  current log timing is instrumentation only; it is not launcher-visible latency
+  proof.
 
 ## Objective
 

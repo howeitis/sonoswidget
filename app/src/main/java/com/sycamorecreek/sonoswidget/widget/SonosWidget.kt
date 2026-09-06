@@ -33,9 +33,18 @@ import com.sycamorecreek.sonoswidget.service.WidgetStateStore
 class SonosWidget : GlanceAppWidget() {
 
     companion object {
-        val MINI_SIZE = DpSize(240.dp, 80.dp)
-        val HALF_SIZE = DpSize(320.dp, 180.dp)
-        val FULL_SIZE = DpSize(400.dp, 340.dp)
+        val MINI_SIZE = DpSize(
+            WidgetLayoutPolicy.MINI_WIDTH_DP.dp,
+            WidgetLayoutPolicy.MINI_HEIGHT_DP.dp
+        )
+        val HALF_SIZE = DpSize(
+            WidgetLayoutPolicy.COMPACT_WIDTH_DP.dp,
+            WidgetLayoutPolicy.COMPACT_HEIGHT_DP.dp
+        )
+        val FULL_SIZE = DpSize(
+            WidgetLayoutPolicy.EXPANDED_WIDTH_DP.dp,
+            WidgetLayoutPolicy.EXPANDED_HEIGHT_DP.dp
+        )
     }
 
     override val sizeMode = SizeMode.Responsive(
@@ -63,16 +72,10 @@ class SonosWidget : GlanceAppWidget() {
             } else null
 
             val size = LocalSize.current
-            when {
-                size.height >= FULL_SIZE.height -> {
-                    ExpandedLayout(state, albumArt, background)
-                }
-                size.height >= HALF_SIZE.height -> {
-                    CompactLayout(state, albumArt, background)
-                }
-                else -> {
-                    MiniLayout(state, albumArt, background)
-                }
+            when (WidgetLayoutPolicy.bucketFor(size.width.value.toInt(), size.height.value.toInt())) {
+                WidgetLayoutPolicy.Bucket.EXPANDED -> ExpandedLayout(state, albumArt, background)
+                WidgetLayoutPolicy.Bucket.COMPACT -> CompactLayout(state, albumArt, background)
+                WidgetLayoutPolicy.Bucket.MINI -> MiniLayout(state, albumArt, background)
             }
         }
     }

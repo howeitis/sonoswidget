@@ -124,6 +124,7 @@ class SonosCompanionActivity : ComponentActivity() {
         private const val SONOS_S2_PACKAGE = "com.sonos.acr2"
         private const val SONOS_S1_PACKAGE = "com.sonos.acr"
         const val EXTRA_SONOS_APP_UNAVAILABLE = "sonos_app_unavailable"
+        const val EXTRA_ROOM_CHOOSER = "room_chooser"
     }
 
     private lateinit var tokenStore: TokenStore
@@ -151,6 +152,7 @@ class SonosCompanionActivity : ComponentActivity() {
     private var hasNearbyPermission by mutableStateOf(false)
     private var isScanning by mutableStateOf(false)
     private var scanMessage by mutableStateOf<String?>(null)
+    private var showRoomChooser by mutableStateOf(false)
 
     private val scope = CoroutineScope(Dispatchers.Main)
 
@@ -231,7 +233,9 @@ class SonosCompanionActivity : ComponentActivity() {
                             onSelectService = ::selectPreferredService,
                             cacheSizeBytes = cacheSizeBytes,
                             onClearCache = ::clearImageCache,
-                            onRefreshWidget = ::refreshWidget
+                            onRefreshWidget = ::refreshWidget,
+                            showRoomChooser = showRoomChooser,
+                            onSwitchRoom = ::switchRoom
                         )
                     }
                 }
@@ -257,6 +261,9 @@ class SonosCompanionActivity : ComponentActivity() {
     // ──────────────────────────────────────────────
 
     private fun handleIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_ROOM_CHOOSER, false) == true) {
+            showRoomChooser = true
+        }
         if (intent?.getBooleanExtra(EXTRA_SONOS_APP_UNAVAILABLE, false) == true) {
             scanMessage = "Sonos isn't installed or couldn't be opened. Get it below."
         }
@@ -517,6 +524,13 @@ class SonosCompanionActivity : ComponentActivity() {
         }
     }
 
+    private fun switchRoom(zone: Zone) {
+        scope.launch {
+            SonosRepository.getInstance(applicationContext).switchZone(zone.id)
+            showRoomChooser = false
+        }
+    }
+
     private fun updateRoomFollowMode(mode: SonosPreferences.RoomFollowMode) {
         roomFollowMode = mode
         if (mode == SonosPreferences.RoomFollowMode.FOLLOW_PLAYING_MUSIC) {
@@ -667,7 +681,9 @@ private fun CompanionScreen(
     onSelectService: (String) -> Unit,
     cacheSizeBytes: Long,
     onClearCache: () -> Unit,
-    onRefreshWidget: () -> Unit
+    onRefreshWidget: () -> Unit,
+    showRoomChooser: Boolean,
+    onSwitchRoom: (Zone) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -701,6 +717,11 @@ private fun CompanionScreen(
         NowPlayingCard(state = state, onOpenSonos = onOpenSonos, onGetSonos = onGetSonos)
 
         Spacer(modifier = Modifier.height(14.dp))
+
+        if (showRoomChooser) {
+            RoomChooserCard(state = state, onSwitchRoom = onSwitchRoom)
+            Spacer(modifier = Modifier.height(14.dp))
+        }
 
         // ── Connection ──
         SectionCard(title = "Connection") {
@@ -1275,6 +1296,56 @@ private fun ChecklistRow(label: String, ok: Boolean) {
             text = label,
             style = MaterialTheme.typography.bodySmall
         )
+    }
+}
+
+@Composable
+private fun RoomChooserCard(
+    state: SonosWidgetState,
+    onSwitchRoom: (Zone) -> Unit
+) {
+    SectionCard(title = "Switch room") {
+        if (state.zones.isEmpty()) {
+            Text(
+                text = "No rooms are available yet. Scan for speakers and try again.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Text(
+                text = "Choose a room for this widget. The full list remains available here when the widget is too small to show it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            state.zones.forEachIndexed { index, zone ->
+                if (index > 0) HorizontalDivider()
+                TextButton(
+                    onClick = { onSwitchRoom(zone) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_speaker_device),
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = zone.displayName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (zone.id == state.activeZone.id) FontWeight.Bold else FontWeight.Normal
+                        )
+                        if (zone.id == state.activeZone.id) {
+                            Text(
+                                text = "Current widget room",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

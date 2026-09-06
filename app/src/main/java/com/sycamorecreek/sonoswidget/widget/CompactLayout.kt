@@ -244,7 +244,8 @@ private fun CompactRoomSelector(state: SonosWidgetState) {
             )
         }
         Spacer(modifier = GlanceModifier.height(8.dp))
-        val rooms = state.zones.filter { it.id != state.activeZone.id }.take(4)
+        val allOtherRooms = state.zones.filter { it.id != state.activeZone.id }
+        val rooms = allOtherRooms.take(4)
         if (rooms.isEmpty()) {
             Text(
                 text = "No other rooms found",
@@ -272,6 +273,18 @@ private fun CompactRoomSelector(state: SonosWidgetState) {
                     }
                     if (row.size == 1) Box(modifier = GlanceModifier.defaultWeight()) {}
                 }
+            }
+            if (allOtherRooms.size > rooms.size) {
+                Spacer(modifier = GlanceModifier.height(6.dp))
+                GlassChip(
+                    text = "More rooms…",
+                    contentDescription = "Open all rooms in the Sonos Widget companion",
+                    action = actionRunCallback<OpenRoomChooserAction>(),
+                    textColor = WidgetTheme.TextSecondary,
+                    fontSize = 10,
+                    horizontalPadding = 9.dp,
+                    verticalPadding = 6.dp
+                )
             }
         }
     }

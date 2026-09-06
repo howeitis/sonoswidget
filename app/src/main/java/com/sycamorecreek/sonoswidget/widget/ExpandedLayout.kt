@@ -9,8 +9,6 @@ import androidx.glance.action.actionParametersOf
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.cornerRadius
-import androidx.glance.appwidget.lazy.LazyColumn
-import androidx.glance.appwidget.lazy.items
 import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
@@ -986,7 +984,11 @@ private fun RoomSelectorPanel(state: SonosWidgetState) {
         Spacer(modifier = GlanceModifier.height(6.dp))
 
         val rowSize = 3
-        val chunks = otherZones.chunked(rowSize)
+        // A Glance widget cannot offer a reliably scrollable list at every
+        // launcher size. Keep this surface bounded and hand the overflow to
+        // the companion activity, which has a normal scrollable Compose list.
+        val visibleZones = otherZones.take(6)
+        val chunks = visibleZones.chunked(rowSize)
         chunks.forEachIndexed { rowIndex, chunk ->
             if (rowIndex > 0) {
                 Spacer(modifier = GlanceModifier.height(6.dp))
@@ -1033,6 +1035,18 @@ private fun RoomSelectorPanel(state: SonosWidgetState) {
                     }
                 }
             }
+        }
+        if (otherZones.size > visibleZones.size) {
+            Spacer(modifier = GlanceModifier.height(6.dp))
+            GlassChip(
+                text = "More rooms…",
+                contentDescription = "Open all rooms in the Sonos Widget companion",
+                action = actionRunCallback<OpenRoomChooserAction>(),
+                textColor = WidgetTheme.TextSecondary,
+                fontSize = 10,
+                horizontalPadding = 9.dp,
+                verticalPadding = 6.dp
+            )
         }
     }
 }

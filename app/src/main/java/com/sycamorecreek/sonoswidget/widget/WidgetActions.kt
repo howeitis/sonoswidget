@@ -585,6 +585,24 @@ class ToggleRoomSelectorAction : ActionCallback {
     }
 }
 
+/** Opens the scrollable room chooser when a widget surface cannot fit every room. */
+class OpenRoomChooserAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        try {
+            context.startActivity(Intent(context, SonosCompanionActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(SonosCompanionActivity.EXTRA_ROOM_CHOOSER, true)
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to open room chooser", e)
+        }
+    }
+}
+
 internal val SHOW_GROUPING_EDITOR_KEY = androidx.datastore.preferences.core.booleanPreferencesKey("show_grouping_editor")
 internal val GROUPING_DRAFT_KEY = androidx.datastore.preferences.core.stringSetPreferencesKey("grouping_draft_ids")
 internal val SECONDARY_SECTION_KEY = androidx.datastore.preferences.core.stringPreferencesKey("secondary_section")
