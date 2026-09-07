@@ -19,6 +19,7 @@ import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
 import androidx.glance.layout.padding
+import androidx.glance.layout.size
 import androidx.glance.layout.width
 import androidx.glance.semantics.contentDescription
 import androidx.glance.semantics.semantics
@@ -588,7 +589,7 @@ private fun VolumeRow(
                 contentDescription = "Decrease volume",
                 action = actionRunCallback<VolumeDownAction>(),
                 enabled = !controlsDisabled && state.capabilities.canChangeVolume,
-                boxSize = 40.dp,
+                boxSize = 48.dp,
                 iconSize = 18.dp,
                 tint = WidgetTheme.TextSecondary
             )
@@ -610,7 +611,7 @@ private fun VolumeRow(
                 contentDescription = "Increase volume",
                 action = actionRunCallback<VolumeUpAction>(),
                 enabled = !controlsDisabled && state.capabilities.canChangeVolume,
-                boxSize = 40.dp,
+                boxSize = 48.dp,
                 iconSize = 18.dp,
                 tint = WidgetTheme.TextSecondary
             )
@@ -623,7 +624,7 @@ private fun VolumeRow(
             contentDescription = if (state.volumeMuted) "Unmute" else "Mute",
             action = actionRunCallback<ToggleMuteAction>(),
             enabled = !controlsDisabled && state.capabilities.canMute,
-            boxSize = 40.dp,
+            boxSize = 48.dp,
             iconSize = 18.dp,
             tint = if (state.volumeMuted) WidgetTheme.TextPrimary else WidgetTheme.TextTertiary,
             glass = true
@@ -646,8 +647,8 @@ private fun SeekNudgeButton(
 ) {
     Box(
         modifier = GlanceModifier
-            .width(40.dp)
-            .height(32.dp)
+            // Expanded has the height budget for an accessible touch target.
+            .size(48.dp)
             .semantics { contentDescription = desc }
             .clickable(callback),
         contentAlignment = Alignment.Center

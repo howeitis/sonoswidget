@@ -12,7 +12,9 @@ object WidgetLayoutPolicy {
     const val COMPACT_WIDTH_DP = 320
     const val COMPACT_HEIGHT_DP = 180
     const val EXPANDED_WIDTH_DP = 400
-    const val EXPANDED_HEIGHT_DP = 340
+    // A connected player needs room for artwork, progress, 48dp controls,
+    // volume, and one bounded secondary region. 340dp clips that contract.
+    const val EXPANDED_HEIGHT_DP = 460
 
     fun bucketFor(widthDp: Int, heightDp: Int): Bucket = when {
         widthDp >= EXPANDED_WIDTH_DP && heightDp >= EXPANDED_HEIGHT_DP -> Bucket.EXPANDED

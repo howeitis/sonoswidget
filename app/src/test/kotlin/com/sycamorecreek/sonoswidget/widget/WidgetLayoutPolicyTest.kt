@@ -25,7 +25,7 @@ class WidgetLayoutPolicyTest {
     fun `narrow or short hosts fall back to a fitting layout`() {
         assertEquals(WidgetLayoutPolicy.Bucket.MINI, WidgetLayoutPolicy.bucketFor(240, 340))
         assertEquals(WidgetLayoutPolicy.Bucket.MINI, WidgetLayoutPolicy.bucketFor(319, 180))
-        assertEquals(WidgetLayoutPolicy.Bucket.COMPACT, WidgetLayoutPolicy.bucketFor(400, 339))
+        assertEquals(WidgetLayoutPolicy.Bucket.COMPACT, WidgetLayoutPolicy.bucketFor(400, 459))
         assertEquals(WidgetLayoutPolicy.Bucket.MINI, WidgetLayoutPolicy.bucketFor(180, 48))
     }
 }

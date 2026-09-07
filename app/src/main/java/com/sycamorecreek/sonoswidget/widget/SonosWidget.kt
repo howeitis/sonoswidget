@@ -21,7 +21,7 @@ import com.sycamorecreek.sonoswidget.service.WidgetStateStore
  * Uses SizeMode.Responsive with three size buckets:
  * - Mini    (~240x80dp)   — lock screen / hyper-compact
  * - Compact (~320x180dp)  — 4x2 home screen
- * - Full    (~400x340dp)  — 5x5+ home screen (expanded layout)
+ * - Full    (~400x460dp)  — enlarged home screen (expanded layout)
  *
  * Reads playback state from Glance Preferences (written by PlaybackService
  * via WidgetStateStore) and delegates to the appropriate layout composable.

@@ -71,7 +71,7 @@ pollOnce() → repository.pollAndUpdate() → pollLocal() or pollCloud()
 ```
 MINI_SIZE  = 240×80dp   → CompactLayout (lock screen)
 HALF_SIZE  = 320×180dp  → CompactLayout (4x2)
-FULL_SIZE  = 400×340dp  → ExpandedLayout (5x5+, 6x5)
+FULL_SIZE  = 400×460dp  → ExpandedLayout (only when the host can fit its player budget)
 ```
 
 Android widget dp formula: `(cellCount × 73) - 16`. A 6x5 grid ≈ 422×349dp.
