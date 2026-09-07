@@ -7,6 +7,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.updateAppWidgetState
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.GROUPING_DRAFT_KEY
+import com.sycamorecreek.sonoswidget.widget.GROUPING_DRAFT_TARGET_KEY
 import com.sycamorecreek.sonoswidget.widget.Favorite
 import com.sycamorecreek.sonoswidget.widget.QueueItem
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
@@ -14,6 +16,7 @@ import com.sycamorecreek.sonoswidget.widget.PendingWidgetOperation
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
 import com.sycamorecreek.sonoswidget.widget.SonosWidget
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
+import com.sycamorecreek.sonoswidget.widget.SHOW_GROUPING_EDITOR_KEY
 import com.sycamorecreek.sonoswidget.widget.Track
 import com.sycamorecreek.sonoswidget.widget.WidgetColorPalette
 import com.sycamorecreek.sonoswidget.widget.WidgetCapabilities
@@ -61,6 +64,20 @@ object WidgetStateStore {
         for (glanceId in glanceIds) {
             try {
                 updateAppWidgetState(context, glanceId) { prefs ->
+                    val previousTargetId = prefs[STATE_KEY]
+                        ?.let(::deserialize)
+                        ?.activeZone
+                        ?.id
+                    // Group selection is per widget, but its destination is
+                    // shared. Never allow a draft created for room A to be
+                    // applied after the shared target has moved to room B.
+                    if (!previousTargetId.isNullOrBlank() &&
+                        previousTargetId != state.activeZone.id
+                    ) {
+                        prefs[SHOW_GROUPING_EDITOR_KEY] = false
+                        prefs.remove(GROUPING_DRAFT_KEY)
+                        prefs.remove(GROUPING_DRAFT_TARGET_KEY)
+                    }
                     prefs[STATE_KEY] = json
                 }
                 widget.update(context, glanceId)

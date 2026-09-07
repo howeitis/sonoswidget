@@ -737,12 +737,16 @@ class SonosRepository private constructor(
         val enrichedFavorites = cachedFavorites?.map {
             Favorite(id = it.id, title = it.title, artUrl = it.albumArtUri)
         } ?: emptyList()
-        state = state.copy(
+        // Queue/favorites are enrichment. They may complete after a user action,
+        // so merge them into the newest state only for the same media identity.
+        val currentForEnrichment = _widgetState.value
+        if (artworkVersionFor(currentForEnrichment) != artworkVersion) return currentForEnrichment
+        state = currentForEnrichment.copy(
             queue = enrichedQueue,
             favorites = enrichedFavorites,
             capabilities = WidgetStateMapper.capabilitiesFor(
                 connectionMode = activeConnectionMode,
-                track = state.currentTrack,
+                track = currentForEnrichment.currentTrack,
                 currentSource = currentSource,
                 hasQueue = enrichedQueue.isNotEmpty(),
                 hasFavorites = enrichedFavorites.isNotEmpty(),
@@ -773,21 +777,27 @@ class SonosRepository private constructor(
                 }
             }
             publishedArtworkVersion = artworkVersion
-            state = state.copy(colorPalette = palette, artworkVersion = artworkVersion)
+            val currentForArtwork = _widgetState.value
+            if (artworkVersionFor(currentForArtwork) != artworkVersion) return currentForArtwork
+            state = currentForArtwork.copy(colorPalette = palette, artworkVersion = artworkVersion)
             WidgetBackgroundRenderer.renderAndCache(context, artBitmap, artUrl)
         } else {
+            val currentForArtwork = _widgetState.value
+            if (artworkVersionFor(currentForArtwork) != artworkVersion) return currentForArtwork
             publishedArtworkVersion = null
             cachedPalette = null
             lastPaletteArtUrl = null
             WidgetBackgroundRenderer.clear(context)
+            state = currentForArtwork.copy(artworkVersion = null)
         }
 
         cacheConnection(activeConnectionMode)
 
         if (!isPollTargetCurrent(targetGeneration, targetZoneId, ip)) return null
-        _widgetState.value = state
-        WidgetStateStore.pushState(context, state)
-        return state
+        val finalState = applyOptimisticOverrides(state)
+        _widgetState.value = finalState
+        WidgetStateStore.pushState(context, finalState)
+        return finalState
     }
 
     /**
@@ -1492,9 +1502,17 @@ class SonosRepository private constructor(
     }
 
     /** Applies an explicit grouping draft; no membership changes occur before this call. */
-    suspend fun applyGroupingDraft(selectedSpeakerIds: Set<String>): Boolean {
+    suspend fun applyGroupingDraft(
+        selectedSpeakerIds: Set<String>,
+        expectedTargetId: String
+    ): Boolean {
         if (!canExecute(_widgetState.value.capabilities.canGroup, "apply grouping")) return false
         if (activeConnectionMode == ConnectionMode.CLOUD) return false
+        val targetGeneration = roomTargetGeneration
+        if (!isGroupingTargetCurrent(expectedTargetId, targetGeneration)) {
+            Log.d(TAG, "Ignoring grouping draft for an obsolete room target")
+            return false
+        }
         if (_widgetState.value.pendingOperations.any {
                 it.type == WidgetOperationType.APPLYING_GROUPING
             }) {
@@ -1505,8 +1523,16 @@ class SonosRepository private constructor(
         // Membership can change outside the widget. Validate the topology at the
         // last responsible moment so an explicit draft is never applied to a
         // stale group map.
+        // Capture the destination before the topology request suspends. Every
+        // later command is guarded against a room switch, not just a topology
+        // refresh that happens to return successfully.
         val ip = activeSpeakerIp ?: return false
-        val groups = controller.getZoneGroupState(ip, activeSpeakerPort) ?: return false
+        val port = activeSpeakerPort
+        val groups = controller.getZoneGroupState(ip, port) ?: return false
+        if (!isGroupingTargetCurrent(expectedTargetId, targetGeneration) || ip != activeSpeakerIp) {
+            Log.d(TAG, "Discarding grouping topology for an obsolete room target")
+            return false
+        }
         cachedZoneGroups = groups
         lastZoneRefreshMs = System.currentTimeMillis()
         val activeId = activeZoneId ?: return false
@@ -1528,6 +1554,10 @@ class SonosRepository private constructor(
 
         var succeeded = true
         for (member in members) {
+            if (!isGroupingTargetCurrent(expectedTargetId, targetGeneration) || ip != activeSpeakerIp) {
+                Log.d(TAG, "Stopping grouping apply after room target changed")
+                return false
+            }
             if (member.uuid == coordinatorId) continue
             val groupedHere = activeGroup.members.any { it.uuid == member.uuid }
             when {
@@ -1542,7 +1572,8 @@ class SonosRepository private constructor(
 
         kotlinx.coroutines.delay(500)
         forceZoneRefreshUntilMs = System.currentTimeMillis() + 8_000L
-        cachedZoneGroups = controller.getZoneGroupState(ip, activeSpeakerPort)
+        if (!isGroupingTargetCurrent(expectedTargetId, targetGeneration) || ip != activeSpeakerIp) return false
+        cachedZoneGroups = controller.getZoneGroupState(ip, port)
         lastZoneRefreshMs = System.currentTimeMillis()
         pollAndUpdate()
         if (!succeeded) {
@@ -1555,6 +1586,14 @@ class SonosRepository private constructor(
         }
         return succeeded
     }
+
+    private fun isGroupingTargetCurrent(expectedTargetId: String, expectedGeneration: Long): Boolean =
+        isGroupingTargetCurrent(
+            expectedTargetId,
+            activeZoneId,
+            expectedGeneration,
+            roomTargetGeneration
+        )
 
     private fun buildOptimisticGroupState(
         currentState: SonosWidgetState,
@@ -1868,3 +1907,11 @@ class SonosRepository private constructor(
         return best
     }
 }
+
+/** Pure guard used before and after every suspending grouping step. */
+internal fun isGroupingTargetCurrent(
+    expectedTargetId: String,
+    currentTargetId: String?,
+    expectedGeneration: Long,
+    currentGeneration: Long
+): Boolean = expectedTargetId == currentTargetId && expectedGeneration == currentGeneration
