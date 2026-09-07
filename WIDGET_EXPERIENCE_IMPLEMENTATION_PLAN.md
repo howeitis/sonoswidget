@@ -42,6 +42,37 @@ is complete. Do not mark a package done without its acceptance evidence. Keep
 the existing SDK levels (compile/target 36, minimum 35) and Glance version unless
 a concrete migration dependency requires a separately documented change.
 
+## B1/B2 completion record — 2026-09-07
+
+**B1 is implemented in `73e92b5` (`Modernize Android build toolchain`).** The
+resolved fixed versions are AGP 9.4.0, Gradle 9.6.0 (with regenerated wrapper
+scripts/JAR and official checksum), Compose compiler 2.3.21, KSP 2.3.11 and
+Hilt 2.60.1. The redundant Kotlin Android plugin was removed in favour of AGP
+built-in Kotlin. Java source/target and Kotlin bytecode remain 17. Checked-in
+daemon criteria require Adoptium Java 21 and contain generated resolver URLs,
+not workstation paths.
+
+Windows verification used a JetBrains Java 21 launcher with an isolated,
+writable Gradle user home. The criteria provisioned and actually ran the daemon
+as Eclipse Adoptium 21.0.12.1; this verifies that criteria override a different
+launcher vendor without modifying a developer cache or global Java settings.
+The local gate `testDebugUnitTest lintDebug assembleDebug` passed in 9m 11s.
+Android Studio AI-261.26222.65.2613.16025427 (2026.1.3, Java 21) is installed,
+but an interactive IDE-sync check was not run: this automation environment does
+not expose Android Studio as a controllable target. This remains a manual
+workstation confirmation, not a known build failure.
+
+**B2 is complete.** The six inapplicable `UseAppTint` errors are narrowly
+suppressed with rationale in the two RemoteViews layouts; no lint baseline or
+global error waiver was added. On the upgraded stack, lint reports **0 errors,
+88 warnings** (remaining established project debt). The CI workflow now uses
+Temurin 21, runs `testDebugUnitTest lintDebug assembleDebug`, uploads test/lint
+reports even on failure, and uploads the debug APK only after a green gate.
+The Linux CI run for `73e92b5` passed on 2026-09-07, including all report/APK
+uploads: [Android Build run 34082511822](https://github.com/howeitis/sonoswidget/actions/runs/34082511822).
+It exercised the 16 committed JVM tests; the subsequent local working tree
+contains two additional, in-progress reliability tests and passed 18 tests.
+
 ## B1 — AGP upgrade and daemon JVM toolchain migration
 
 ### Proposed version contract
