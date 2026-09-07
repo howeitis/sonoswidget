@@ -32,6 +32,9 @@ import com.sycamorecreek.sonoswidget.widget.WidgetOperationType
 import com.sycamorecreek.sonoswidget.widget.WidgetOperationPhase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -171,8 +174,13 @@ class SonosRepository private constructor(
     private var optimisticPlaybackUntilMs: Long = 0L
     private var optimisticVolume: Int? = null
     private var optimisticVolumeUntilMs: Long = 0L
-    /** Serializes relative volume intent so rapid widget callbacks cannot race. */
+    /** Short lock for accepting volume intent; it never covers a speaker command or refresh. */
     private val volumeIntentMutex = Mutex()
+    private val volumeIntentScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var desiredVolume: Int? = null
+    private var desiredVolumeTargetId: String? = null
+    private var acknowledgedVolume: Int? = null
+    private var volumeDrainRunning = false
     /** One shared refresh gate for service, workers, companion, and widget taps. */
     private val refreshMutex = Mutex()
     /** A request received mid-refresh earns one immediate follow-up cycle. */
@@ -1188,7 +1196,68 @@ class SonosRepository private constructor(
      * every tap (for example, five +5 taps from 50 converge to 75).
      */
     suspend fun adjustVolume(delta: Int): Boolean = volumeIntentMutex.withLock {
-        setVolume((_widgetState.value.volume + delta).coerceIn(0, 100))
+        val targetId = activeZoneId ?: return false
+        val target = nextVolumeIntent(
+            desiredVolume ?: optimisticVolume ?: _widgetState.value.volume,
+            delta
+        )
+        if (acknowledgedVolume == null) acknowledgedVolume = _widgetState.value.volume
+        desiredVolume = target
+        desiredVolumeTargetId = targetId
+        // Publish while holding only the intent lock. The network drain runs on a
+        // separate coroutine, so subsequent taps never wait for SOAP or polling.
+        applyOptimisticVolume(target)
+        if (!volumeDrainRunning) {
+            volumeDrainRunning = true
+            volumeIntentScope.launch { drainVolumeIntents() }
+        }
+        true
+    }
+
+    /** Sends only the newest queued absolute volume target for its original room. */
+    private suspend fun drainVolumeIntents() {
+        while (true) {
+            val next = volumeIntentMutex.withLock {
+                val target = desiredVolume
+                val targetId = desiredVolumeTargetId
+                if (target == null || targetId == null) {
+                    volumeDrainRunning = false
+                    return
+                }
+                desiredVolume = null
+                target to targetId
+            }
+
+            if (!isVolumeIntentCurrent(next.second, activeZoneId)) continue
+            when (sendVolumeCommand(next.first)) {
+                CommandOutcome.ACKNOWLEDGED -> acknowledgedVolume = next.first
+                CommandOutcome.DEFINITE_FAILURE -> {
+                    val restore = volumeIntentMutex.withLock {
+                        if (desiredVolume == null && next.second == activeZoneId) acknowledgedVolume else null
+                    }
+                    if (restore != null) {
+                        optimisticVolume = null
+                        pushState(_widgetState.value.copy(volume = restore))
+                    }
+                }
+                CommandOutcome.UNKNOWN -> Unit // Keep the optimistic value until reconciliation.
+            }
+        }
+    }
+
+    private suspend fun sendVolumeCommand(volume: Int): CommandOutcome = routeCommand(
+        local = { ip, port ->
+            if (isActiveGroupGrouped()) controller.setGroupVolumeOutcome(ip, port, volume)
+            else controller.setVolumeOutcome(ip, port, volume)
+        },
+        cloud = { cloudController.setVolume(volume) }
+    )
+
+    private suspend fun discardVolumeIntentForRoomChange() = volumeIntentMutex.withLock {
+        desiredVolume = null
+        desiredVolumeTargetId = null
+        optimisticVolume = null
+        acknowledgedVolume = null
     }
 
     suspend fun setMute(muted: Boolean): Boolean {
@@ -1225,6 +1294,7 @@ class SonosRepository private constructor(
 
     suspend fun switchZone(zoneId: String): Boolean {
         if (activeConnectionMode == ConnectionMode.CLOUD) {
+            discardVolumeIntentForRoomChange()
             val generation = ++roomTargetGeneration
             publishSwitchingRoom(zoneId, _widgetState.value.zones.find { it.id == zoneId }?.displayName.orEmpty())
             cloudController.setActiveGroup(zoneId)
@@ -1235,6 +1305,7 @@ class SonosRepository private constructor(
         for (group in groups) {
             val member = group.members.find { it.uuid == zoneId }
             if (member != null) {
+                discardVolumeIntentForRoomChange()
                 val coordinator = group.members.find { it.isCoordinator } ?: member
                 val generation = ++roomTargetGeneration
                 activeSpeakerIp = coordinator.ip
@@ -1917,3 +1988,9 @@ internal fun isGroupingTargetCurrent(
     expectedGeneration: Long,
     currentGeneration: Long
 ): Boolean = expectedTargetId == currentTargetId && expectedGeneration == currentGeneration
+
+/** Pure volume-intent rules used by the coalescing command drain. */
+internal fun nextVolumeIntent(current: Int, delta: Int): Int = (current + delta).coerceIn(0, 100)
+
+internal fun isVolumeIntentCurrent(expectedTargetId: String, currentTargetId: String?): Boolean =
+    expectedTargetId == currentTargetId
