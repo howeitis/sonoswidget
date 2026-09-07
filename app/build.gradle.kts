@@ -1,8 +1,8 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.hilt)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.ksp)
@@ -43,18 +43,20 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
     }
 
-    // Keep pure Kotlin widget-state tests in the conventional Kotlin source
-    // directory; AGP otherwise only discovers Java test files in this project.
-    sourceSets.getByName("test").java.srcDir("src/test/kotlin")
+    // Built-in Kotlin supports Kotlin source directories directly.
+    sourceSets.getByName("test").kotlin.srcDir("src/test/kotlin")
+}
+
+// The daemon runs Java 21; emitted Kotlin bytecode remains Java 17.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
 }
 
 dependencies {

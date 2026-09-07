@@ -6,13 +6,16 @@ Android home screen widget for controlling Sonos speakers. Built with **Jetpack 
 
 **Package:** `com.sycamorecreek.sonoswidget`
 **SDK:** compileSdk 36, minSdk 35, targetSdk 36 (Android 16)
-**Kotlin:** 2.1.21, JVM target 17
+**Kotlin:** Built into AGP 9.4, JVM target 17
 
 ## Build
 
 ```bash
-JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew assembleDebug
+./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
+
+The Gradle daemon is pinned to Eclipse Temurin 21 and is provisioned automatically
+on a clean machine; application bytecode continues to target Java 17.
 
 APK output: `app/build/outputs/apk/debug/app-debug.apk`
 
