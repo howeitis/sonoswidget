@@ -109,4 +109,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.json)
+    // Publication-ordering tests drive real concurrent coroutines; the JVM
+    // artifact keeps them off the Android main-dispatcher factory.
+    testImplementation(libs.coroutines.core)
 }

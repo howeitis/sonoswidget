@@ -57,7 +57,7 @@ class SonosWidget : GlanceAppWidget() {
             val prefs = currentState<Preferences>()
             val stateJson = prefs[WidgetStateStore.STATE_KEY]
             val state = if (stateJson != null) {
-                WidgetStateStore.deserialize(stateJson)
+                WidgetStateStore.deserializeForDisplay(stateJson)
             } else {
                 SonosWidgetState() // Default empty state on first render
             }

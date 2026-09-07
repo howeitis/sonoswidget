@@ -28,7 +28,7 @@ class WidgetStateFixturesTest {
 
     @Test
     fun `loading fixture retains feedback through the widget display decoder`() {
-        val decoded = WidgetStateStore.deserialize(
+        val decoded = WidgetStateStore.deserializeForDisplay(
             WidgetStateStore.serialize(WidgetStateFixtures.loadingFavorite)
         )
 
