@@ -38,9 +38,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -113,11 +111,12 @@ class SonosRepository private constructor(
     // Observable state
     // ──────────────────────────────────────────────
 
-    private val _widgetState = MutableStateFlow(SonosWidgetState())
-    val widgetState: StateFlow<SonosWidgetState> = _widgetState.asStateFlow()
     /** Serializes every visible write so all widget instances see publication order. */
-    private val widgetStateMutex = Mutex()
-    private val stateRevisions = WidgetStateRevisionPolicy()
+    private val statePublisher = WidgetStatePublisher(SonosWidgetState()) { published ->
+        WidgetStateStore.pushState(context, published)
+    }
+    private val _widgetState: StateFlow<SonosWidgetState> = statePublisher.state
+    val widgetState: StateFlow<SonosWidgetState> = _widgetState
 
     // ──────────────────────────────────────────────
     // Connection mode tracking
@@ -1290,9 +1289,7 @@ class SonosRepository private constructor(
         // Optimistic + force a mute refetch on the re-poll that routeCommand runs.
         cachedMuted = muted
         muteDirty = true
-        val ownership = widgetStateMutex.withLock {
-            stateRevisions.claim(setOf(WidgetStateRevisionPolicy.Field.PLAYBACK))
-        }
+        val ownership = statePublisher.claim(setOf(WidgetStateRevisionPolicy.Field.PLAYBACK))
         optimisticMuteOwnership = ownership
         pushState(
             _widgetState.value.copy(volumeMuted = muted),
@@ -1728,108 +1725,35 @@ class SonosRepository private constructor(
     // ──────────────────────────────────────────────
 
     /**
-     * The only path that publishes visible state.  Serializing the StateFlow and
-     * Glance writes prevents two widget instances receiving the same writes in
-     * opposite orders.  Field revisions let slow enrichment prove it is still
-     * writing the state it originally observed.
+     * Widget state is published through [WidgetStatePublisher]; these delegates
+     * keep the repository's call sites reading as intent rather than mechanics.
      */
     private suspend fun pushState(
         newState: SonosWidgetState,
         fields: Set<WidgetStateRevisionPolicy.Field> = WidgetStateRevisionPolicy.Field.entries.toSet(),
         ownership: WidgetStateRevisionPolicy.Ownership? = null
-    ): Boolean = widgetStateMutex.withLock {
-        if (ownership != null && fields.any { !stateRevisions.stillOwns(ownership, it) }) {
-            return@withLock false
-        }
-        val published = mergeStateFields(_widgetState.value, newState, fields)
-        _widgetState.value = published
-        if (ownership == null) stateRevisions.record(fields)
-        WidgetStateStore.pushState(context, published)
-        true
-    }
-
-    /** Applies a narrow asynchronous patch without restoring unrelated old data. */
-    private fun mergeStateFields(
-        current: SonosWidgetState,
-        incoming: SonosWidgetState,
-        fields: Set<WidgetStateRevisionPolicy.Field>
-    ): SonosWidgetState {
-        if (fields.size == WidgetStateRevisionPolicy.Field.entries.size) return incoming
-        var merged = current
-        if (WidgetStateRevisionPolicy.Field.PLAYBACK in fields) {
-            merged = merged.copy(
-                playbackState = incoming.playbackState,
-                volumeMuted = incoming.volumeMuted,
-                shuffleEnabled = incoming.shuffleEnabled,
-                repeatMode = incoming.repeatMode
-            )
-        }
-        if (WidgetStateRevisionPolicy.Field.VOLUME in fields) merged = merged.copy(volume = incoming.volume)
-        if (WidgetStateRevisionPolicy.Field.ENRICHMENT in fields) {
-            merged = merged.copy(
-                queue = incoming.queue,
-                favorites = incoming.favorites,
-                capabilities = incoming.capabilities
-            )
-        }
-        if (WidgetStateRevisionPolicy.Field.ARTWORK in fields) {
-            merged = merged.copy(colorPalette = incoming.colorPalette, artworkVersion = incoming.artworkVersion)
-        }
-        if (WidgetStateRevisionPolicy.Field.MEDIA in fields) {
-            merged = merged.copy(currentTrack = incoming.currentTrack, currentSource = incoming.currentSource)
-        }
-        if (WidgetStateRevisionPolicy.Field.ROOM in fields) {
-            merged = merged.copy(activeZone = incoming.activeZone, zones = incoming.zones, connectionMode = incoming.connectionMode)
-        }
-        if (WidgetStateRevisionPolicy.Field.STATUS in fields) {
-            merged = merged.copy(
-                isReconnecting = incoming.isReconnecting,
-                isRateLimited = incoming.isRateLimited,
-                isOffline = incoming.isOffline,
-                isUpdating = incoming.isUpdating,
-                pendingOperations = incoming.pendingOperations,
-                lastEssentialRefreshMs = incoming.lastEssentialRefreshMs,
-                isContentStale = incoming.isContentStale,
-                errorMessage = incoming.errorMessage,
-                showPermissionHint = incoming.showPermissionHint,
-                offlineSpeakerIds = incoming.offlineSpeakerIds,
-                lastUpdatedMs = incoming.lastUpdatedMs
-            )
-        }
-        return merged
-    }
+    ): Boolean = statePublisher.publish(newState, fields, ownership)
 
     private suspend fun snapshotStateRevisions(): WidgetStateRevisionPolicy.Snapshot =
-        widgetStateMutex.withLock { stateRevisions.snapshot() }
+        statePublisher.snapshot()
 
     private suspend fun isFieldUnchanged(
         snapshot: WidgetStateRevisionPolicy.Snapshot,
         field: WidgetStateRevisionPolicy.Field
-    ): Boolean = widgetStateMutex.withLock { stateRevisions.unchangedSince(snapshot, field) }
+    ): Boolean = statePublisher.isFieldUnchanged(snapshot, field)
 
     /** Publishes only poll fields that no command changed while the poll was in flight. */
     private suspend fun pushPollState(
         incoming: SonosWidgetState,
         snapshot: WidgetStateRevisionPolicy.Snapshot
-    ): Boolean = widgetStateMutex.withLock {
-        val fields = WidgetStateRevisionPolicy.Field.entries.filterTo(mutableSetOf()) {
-            stateRevisions.unchangedSince(snapshot, it)
-        }
-        if (fields.isEmpty()) return@withLock false
-        val published = mergeStateFields(_widgetState.value, incoming, fields)
-        _widgetState.value = published
-        stateRevisions.record(fields)
-        WidgetStateStore.pushState(context, published)
-        true
-    }
+    ): Boolean = statePublisher.publishPoll(incoming, snapshot)
 
     /** Optimistically flips play/pause in the UI and holds it over lagging polls. */
     private suspend fun applyOptimisticPlayback(target: PlaybackState) {
         optimisticPlayback = target
         optimisticPlaybackUntilMs = System.currentTimeMillis() + OPTIMISTIC_HOLD_MS
-        optimisticPlaybackOwnership = widgetStateMutex.withLock {
-            stateRevisions.claim(setOf(WidgetStateRevisionPolicy.Field.PLAYBACK))
-        }
+        optimisticPlaybackOwnership =
+            statePublisher.claim(setOf(WidgetStateRevisionPolicy.Field.PLAYBACK))
         pushState(
             _widgetState.value.copy(playbackState = target),
             setOf(WidgetStateRevisionPolicy.Field.PLAYBACK),
@@ -1841,9 +1765,8 @@ class SonosRepository private constructor(
     private suspend fun applyOptimisticVolume(target: Int) {
         optimisticVolume = target
         optimisticVolumeUntilMs = System.currentTimeMillis() + OPTIMISTIC_HOLD_MS
-        optimisticVolumeOwnership = widgetStateMutex.withLock {
-            stateRevisions.claim(setOf(WidgetStateRevisionPolicy.Field.VOLUME))
-        }
+        optimisticVolumeOwnership =
+            statePublisher.claim(setOf(WidgetStateRevisionPolicy.Field.VOLUME))
         pushState(
             _widgetState.value.copy(volume = target),
             setOf(WidgetStateRevisionPolicy.Field.VOLUME),
