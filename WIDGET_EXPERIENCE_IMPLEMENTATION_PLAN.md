@@ -42,16 +42,22 @@ Observed locally on 2026-09-06:
 |---|---|
 | B1 build stack / daemon criteria | Complete (`73e92b5`), see the record below |
 | B2 lint and CI gates | Complete, 0 errors / 88 warnings |
-| R1 pending state and lifecycle | Complete, see the R1 completion record |
+| R1 pending state and lifecycle | Complete and merged (`a46907c`), see the R1 completion record |
 | R2 action and draft targeting | Implemented (`08b30a4`); acceptance tests not yet written |
-| R3 revision ordering and ownership | Complete and CI-validated, see the R3 completion record |
+| R3 revision ordering and ownership | Complete and merged (`213762c`), see the R3 completion record |
 | R4 transport outcomes | Implemented (`aee37da`); transport-boundary tests are thin |
 | R5 volume intent coalescing | Implemented (`f5f1c8f`); `VolumeIntentPolicyTest` covers convergence, clamping and room scoping as pure policy. What is unproven is the lock scope itself — that a tap arriving during a slow reconcile is not made to wait — which needs the intent bookkeeping behind a seam like `WidgetStatePublisher`'s |
 | U1 expanded minimum size | Bucket raised (`74839ad`); render-based validation still outstanding |
 
 `main` was red from `7e600d1` until `707d796`; treat any completion claim made
-between those commits as unverified, because nothing compiled. The next work is
-R2, R4, R5 and U1 acceptance evidence, in that order of cheapness.
+between those commits as unverified, because nothing compiled. PR #4 merged the
+repair together with R1 and R3 as `9ccac6f`, and `main` is green again.
+
+The next work is R2, R4, R5 and U1 acceptance evidence, in that order of
+cheapness. R5 and U1 both need production code reshaped to be testable at all,
+the way the publication path was extracted into `WidgetStatePublisher` for R3;
+that is a deliberate decision to take rather than a detail to absorb into
+another package's commit.
 
 Note for whoever picks this up in a cloud session: this environment's egress
 policy blocks Google's Maven and SDK hosts, so no Android build can run there.

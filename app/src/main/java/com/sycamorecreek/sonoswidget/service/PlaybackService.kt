@@ -42,9 +42,10 @@ import kotlinx.coroutines.sync.Mutex
  *
  * Polling strategy (active mode):
  *   - PLAYING:      Poll every 2 seconds (for progress bar updates)
- *   - PAUSED:       Poll every 10 seconds (for external state changes)
+ *   - PAUSED:       Poll every 4 seconds (for external state changes)
  *   - STOPPED:      Poll every 15 seconds (idle monitoring)
- *   - DISCONNECTED: Exponential backoff 30s → 60s → 120s → 240s → 300s (capped)
+ *   - DISCONNECTED: Exponential backoff from 30s, capped at 60s while Wi-Fi is
+ *                   attached and 300s off Wi-Fi
  *
  * Battery budget per PRD §12.2:
  *   - Active playback (4 hrs/day): < 1.5% battery via foreground service + push events
