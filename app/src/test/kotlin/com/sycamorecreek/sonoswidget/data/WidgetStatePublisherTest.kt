@@ -1,7 +1,9 @@
 package com.sycamorecreek.sonoswidget.data
 
+import com.sycamorecreek.sonoswidget.widget.PendingWidgetOperation
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
+import com.sycamorecreek.sonoswidget.widget.WidgetOperationType
 import com.sycamorecreek.sonoswidget.widget.Zone
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -180,6 +182,42 @@ class WidgetStatePublisherTest {
             )
         )
         assertFalse(publisher.current.volumeMuted)
+    }
+
+    // ── In-flight requests vs. polling ───────────────────────────────
+
+    @Test fun `a poll cannot clear a request that is still running`() = runBlocking {
+        val loadingFavorite = PendingWidgetOperation(
+            id = "favorite-1",
+            type = WidgetOperationType.LOADING_FAVORITE,
+            targetId = "kitchen"
+        )
+        val publisher = publisher(SonosWidgetState(volume = 50))
+        publisher.publish(publisher.current.copy(pendingOperations = listOf(loadingFavorite)))
+
+        // A poll runs while the playlist is still loading. It reports the
+        // speaker, which knows nothing about this app's request.
+        val pollSnapshot = publisher.snapshot()
+        assertTrue(publisher.publishPoll(SonosWidgetState(volume = 30), pollSnapshot))
+
+        assertEquals(listOf(loadingFavorite), publisher.current.pendingOperations)
+        assertEquals(30, publisher.current.volume)
+    }
+
+    @Test fun `finishing a request still clears it`() = runBlocking {
+        val publisher = publisher()
+        publisher.publish(
+            publisher.current.copy(
+                pendingOperations = listOf(
+                    PendingWidgetOperation(id = "group-1", type = WidgetOperationType.APPLYING_GROUPING)
+                )
+            )
+        )
+
+        // Only the request's own completion retires it.
+        publisher.publish(publisher.current.copy(pendingOperations = emptyList()))
+
+        assertTrue(publisher.current.pendingOperations.isEmpty())
     }
 
     // ── Room scoping ─────────────────────────────────────────────────

@@ -860,6 +860,9 @@ class SonosRepository private constructor(
 
     private suspend fun pollCloud(): SonosWidgetState? {
         val targetGeneration = roomTargetGeneration
+        // Snapshot before the network call, so a slow cloud response applies
+        // only to fields no command changed while it was in flight.
+        val pollSnapshot = snapshotStateRevisions()
         // Check if we're in a rate-limit backoff period
         if (System.currentTimeMillis() < rateLimitedUntilMs) {
             Log.d(TAG, "Cloud poll skipped — rate limited until ${rateLimitedUntilMs}")
@@ -899,8 +902,8 @@ class SonosRepository private constructor(
 
         val displayState = applyOptimisticOverrides(successState)
         if (targetGeneration != roomTargetGeneration) return null
-        pushState(displayState)
-        return displayState
+        pushPollState(displayState, pollSnapshot)
+        return _widgetState.value
     }
 
     /**

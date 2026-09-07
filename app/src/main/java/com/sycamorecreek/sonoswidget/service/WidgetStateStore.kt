@@ -25,6 +25,7 @@ import com.sycamorecreek.sonoswidget.widget.WidgetOperationType
 import com.sycamorecreek.sonoswidget.widget.Zone
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
 /**
  * Bridge between the PlaybackService and the Glance widget.
@@ -41,6 +42,17 @@ object WidgetStateStore {
 
     /** Glance Preferences key holding the serialized widget state JSON. */
     val STATE_KEY = stringPreferencesKey("sonos_widget_state")
+
+    /**
+     * Identifies the process that published a state.
+     *
+     * A pending operation is a request held in memory by the process that
+     * started it. Once that process is gone the request can no longer complete,
+     * fail or be cancelled, so a later process must not render it as still in
+     * flight — the widget would show "Switching room" until the next poll,
+     * which after an idle teardown can be fifteen minutes away.
+     */
+    private val sessionId: String = UUID.randomUUID().toString()
 
     /**
      * Pushes a new state to all widget instances and triggers refresh.
@@ -138,6 +150,7 @@ object WidgetStateStore {
                 state.offlineSpeakerIds.forEach { put(it) }
             })
             put("lastUpdatedMs", state.lastUpdatedMs)
+            put("sessionId", sessionId)
         }.toString()
     }
 
@@ -338,12 +351,31 @@ object WidgetStateStore {
     }
 
     /**
-     * Recovery is an explicit lifecycle policy, separate from ordinary widget
-     * rendering. A new repository cannot safely resume a persisted request, so
-     * it starts reconciliation without displaying it as still in-flight.
+     * Decodes state for the widget to render.
+     *
+     * Within the publishing process this keeps pending operations, so ordinary
+     * re-renders during a slow favorite or grouping request still show their
+     * feedback. State left behind by an earlier process is a different case:
+     * its operations can never resolve, so they are dropped and the next poll
+     * reconciles. State written before session identity existed is treated as
+     * an earlier process, which is what it is.
      */
-    fun deserializeForProcessRecovery(json: String): SonosWidgetState =
-        deserialize(json).copy(pendingOperations = emptyList())
+    fun deserializeForDisplay(json: String): SonosWidgetState {
+        val state = deserialize(json)
+        if (state.pendingOperations.isEmpty()) return state
+        return if (publishingSessionOf(json) == sessionId) {
+            state
+        } else {
+            state.copy(pendingOperations = emptyList())
+        }
+    }
+
+    private fun publishingSessionOf(json: String): String? = try {
+        JSONObject(json).optString("sessionId").takeIf { it.isNotEmpty() }
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to read the publishing session", e)
+        null
+    }
 
     private fun serializeCapabilities(capabilities: WidgetCapabilities): JSONObject = JSONObject().apply {
         put("canPlayPause", capabilities.canPlayPause)

@@ -71,6 +71,11 @@ internal class WidgetStatePublisher(
      * Publishes only the poll fields that no command changed while the poll was
      * in flight, so a slow refresh cannot overwrite newer user intent.
      *
+     * Pending operations are exempt from a poll entirely. They are this app's
+     * own in-flight requests, and a speaker response neither reports nor
+     * cancels them — a poll that carried its own empty list would clear
+     * "Preparing favorite" while the favorite is still loading.
+     *
      * Returns whether anything was published.
      */
     suspend fun publishPoll(
@@ -81,8 +86,9 @@ internal class WidgetStatePublisher(
             revisions.unchangedSince(snapshot, it)
         }
         if (fields.isEmpty()) return@withLock false
+        val inFlight = _state.value.pendingOperations
         revisions.record(fields)
-        write(mergeStateFields(_state.value, incoming, fields))
+        write(mergeStateFields(_state.value, incoming, fields).copy(pendingOperations = inFlight))
         true
     }
 

@@ -11,6 +11,7 @@ import com.sycamorecreek.sonoswidget.widget.WidgetOperationType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.json.JSONObject
 import org.junit.Test
 
 class WidgetStateStoreTest {
@@ -78,23 +79,46 @@ class WidgetStateStoreTest {
     }
 
     @Test
-    fun `process recovery explicitly clears transient operations`() {
-        val original = SonosWidgetState(
-            playbackState = PlaybackState.PLAYING,
-            pendingOperations = listOf(
-                PendingWidgetOperation(
-                    id = "favorite-1",
-                    type = WidgetOperationType.LOADING_FAVORITE,
-                    targetId = "kitchen"
-                )
+    fun `display decoding keeps operations from the publishing session`() {
+        val json = WidgetStateStore.serialize(loadingFavoriteState)
+
+        val decoded = WidgetStateStore.deserializeForDisplay(json)
+
+        assertEquals(PlaybackState.PLAYING, decoded.playbackState)
+        assertEquals("favorite-1", decoded.pendingOperations.single().id)
+    }
+
+    @Test
+    fun `display decoding drops operations left by an earlier process`() {
+        val json = JSONObject(WidgetStateStore.serialize(loadingFavoriteState))
+            .put("sessionId", "a-process-that-has-since-died")
+            .toString()
+
+        val decoded = WidgetStateStore.deserializeForDisplay(json)
+
+        // The rest of the last known state still renders; only the request that
+        // can no longer resolve is dropped, for the next poll to reconcile.
+        assertEquals(PlaybackState.PLAYING, decoded.playbackState)
+        assertTrue(decoded.pendingOperations.isEmpty())
+    }
+
+    @Test
+    fun `display decoding drops operations stored before session identity`() {
+        val json = JSONObject(WidgetStateStore.serialize(loadingFavoriteState))
+            .apply { remove("sessionId") }
+            .toString()
+
+        assertTrue(WidgetStateStore.deserializeForDisplay(json).pendingOperations.isEmpty())
+    }
+
+    private val loadingFavoriteState = SonosWidgetState(
+        playbackState = PlaybackState.PLAYING,
+        pendingOperations = listOf(
+            PendingWidgetOperation(
+                id = "favorite-1",
+                type = WidgetOperationType.LOADING_FAVORITE,
+                targetId = "kitchen"
             )
         )
-
-        val recovered = WidgetStateStore.deserializeForProcessRecovery(
-            WidgetStateStore.serialize(original)
-        )
-
-        assertEquals(PlaybackState.PLAYING, recovered.playbackState)
-        assertTrue(recovered.pendingOperations.isEmpty())
-    }
+    )
 }
