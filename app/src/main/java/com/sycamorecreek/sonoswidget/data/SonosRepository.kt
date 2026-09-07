@@ -14,6 +14,7 @@ import com.sycamorecreek.sonoswidget.sonos.cloud.CloudSonosController
 import com.sycamorecreek.sonoswidget.sonos.cloud.SonosOAuthManager
 import com.sycamorecreek.sonoswidget.sonos.cloud.TokenStore
 import com.sycamorecreek.sonoswidget.sonos.local.DiscoveredSpeaker
+import com.sycamorecreek.sonoswidget.sonos.local.CommandTransportOutcome
 import com.sycamorecreek.sonoswidget.sonos.local.FavoriteInfo
 import com.sycamorecreek.sonoswidget.sonos.local.LocalSonosController
 import com.sycamorecreek.sonoswidget.sonos.local.QueueItemInfo
@@ -1082,7 +1083,7 @@ class SonosRepository private constructor(
     suspend fun play(): Boolean {
         if (!canExecute(_widgetState.value.capabilities.canPlayPause, "play")) return false
         return routeCommand(
-            local = { ip, port -> controller.play(ip, port) },
+            local = { ip, port -> controller.playOutcome(ip, port) },
             cloud = { cloudController.play() }
         ).isAcknowledged
     }
@@ -1102,7 +1103,7 @@ class SonosRepository private constructor(
     suspend fun pause(): Boolean {
         if (!canExecute(_widgetState.value.capabilities.canPlayPause, "pause")) return false
         return routeCommand(
-            local = { ip, port -> controller.pause(ip, port) },
+            local = { ip, port -> controller.pauseOutcome(ip, port) },
             cloud = { cloudController.pause() }
         ).isAcknowledged
     }
@@ -1116,9 +1117,9 @@ class SonosRepository private constructor(
         }
         applyOptimisticPlayback(target)
         val outcome = if (target == PlaybackState.PAUSED) {
-            routeCommand({ ip, port -> controller.pause(ip, port) }, { cloudController.pause() })
+            routeCommand({ ip, port -> controller.pauseOutcome(ip, port) }, { cloudController.pause() })
         } else {
-            routeCommand({ ip, port -> controller.play(ip, port) }, { cloudController.play() })
+            routeCommand({ ip, port -> controller.playOutcome(ip, port) }, { cloudController.play() })
         }
         if (outcome == CommandOutcome.DEFINITE_FAILURE) revertPlaybackOptimism(base.playbackState)
         return outcome.isAcknowledged
@@ -1130,7 +1131,7 @@ class SonosRepository private constructor(
         // After a skip the speaker keeps playing — show the playing icon instantly.
         applyOptimisticPlayback(PlaybackState.PLAYING)
         val outcome = routeCommand(
-            local = { ip, port -> controller.next(ip, port) },
+            local = { ip, port -> controller.nextOutcome(ip, port) },
             cloud = { cloudController.next() }
         )
         if (outcome == CommandOutcome.DEFINITE_FAILURE) revertPlaybackOptimism(base)
@@ -1142,7 +1143,7 @@ class SonosRepository private constructor(
         val base = _widgetState.value.playbackState
         applyOptimisticPlayback(PlaybackState.PLAYING)
         val outcome = routeCommand(
-            local = { ip, port -> controller.previous(ip, port) },
+            local = { ip, port -> controller.previousOutcome(ip, port) },
             cloud = { cloudController.previous() }
         )
         if (outcome == CommandOutcome.DEFINITE_FAILURE) revertPlaybackOptimism(base)
@@ -1158,7 +1159,7 @@ class SonosRepository private constructor(
     suspend fun seek(positionMs: Long): Boolean {
         if (!canExecute(_widgetState.value.capabilities.canSeek, "seek")) return false
         return routeCommand(
-            local = { ip, port -> controller.seek(ip, port, positionMs) },
+            local = { ip, port -> controller.seekOutcome(ip, port, positionMs) },
             cloud = { false }
         ).isAcknowledged
     }
@@ -1169,8 +1170,8 @@ class SonosRepository private constructor(
         applyOptimisticVolume(volume.coerceIn(0, 100))
         val outcome = routeCommand(
             local = { ip, port ->
-                if (isActiveGroupGrouped()) controller.setGroupVolume(ip, port, volume)
-                else controller.setVolume(ip, port, volume)
+                if (isActiveGroupGrouped()) controller.setGroupVolumeOutcome(ip, port, volume)
+                else controller.setVolumeOutcome(ip, port, volume)
             },
             cloud = { cloudController.setVolume(volume) }
         )
@@ -1199,8 +1200,8 @@ class SonosRepository private constructor(
         pushState(_widgetState.value.copy(volumeMuted = muted))
         val outcome = routeCommand(
             local = { ip, port ->
-                if (isActiveGroupGrouped()) controller.setGroupMute(ip, port, muted)
-                else controller.setMute(ip, port, muted)
+                if (isActiveGroupGrouped()) controller.setGroupMuteOutcome(ip, port, muted)
+                else controller.setMuteOutcome(ip, port, muted)
             },
             cloud = { false }
         )
@@ -1681,7 +1682,7 @@ class SonosRepository private constructor(
     }
 
     private suspend fun routeCommand(
-        local: suspend (ip: String, port: Int) -> Boolean,
+        local: suspend (ip: String, port: Int) -> CommandTransportOutcome,
         cloud: suspend () -> Boolean
     ): CommandOutcome {
         val commandStartedAtMs = SystemClock.elapsedRealtime()
@@ -1689,7 +1690,8 @@ class SonosRepository private constructor(
         val result = try {
             withTimeoutOrNull(COMMAND_TIMEOUT_MS) {
                 if (activeConnectionMode == ConnectionMode.CLOUD) {
-                    cloud()
+                    if (cloud()) CommandTransportOutcome.ACKNOWLEDGED
+                    else CommandTransportOutcome.REJECTED
                 } else {
                     executeLocalCommand(local)
                 }
@@ -1701,7 +1703,7 @@ class SonosRepository private constructor(
             null
         }
 
-        if (result == null) {
+        if (result == null || result == CommandTransportOutcome.UNKNOWN) {
             // A timeout can occur after a speaker acts. Preserve the newest
             // intent and make the next action an explicit status check.
             recordUnknownCommand()
@@ -1709,7 +1711,7 @@ class SonosRepository private constructor(
             return CommandOutcome.UNKNOWN
         }
 
-        if (!result) {
+        if (result == CommandTransportOutcome.REJECTED) {
             pushErrorMessage("Command failed — check status")
             return CommandOutcome.DEFINITE_FAILURE
         }
@@ -1753,12 +1755,12 @@ class SonosRepository private constructor(
     }
 
     private suspend fun executeLocalCommand(
-        command: suspend (ip: String, port: Int) -> Boolean
-    ): Boolean {
+        command: suspend (ip: String, port: Int) -> CommandTransportOutcome
+    ): CommandTransportOutcome {
         val ip = activeSpeakerIp
         if (ip == null) {
             Log.w(TAG, "No active speaker — command ignored")
-            return false
+            return CommandTransportOutcome.REJECTED
         }
         return command(ip, activeSpeakerPort)
     }

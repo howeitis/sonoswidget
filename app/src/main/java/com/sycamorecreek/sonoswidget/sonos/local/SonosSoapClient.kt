@@ -1,6 +1,7 @@
 package com.sycamorecreek.sonoswidget.sonos.local
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -81,6 +82,16 @@ class SonosSoapClient(
     enum class Priority { CONTROL, BACKGROUND, SLOW_COMMAND }
 
     /**
+     * Keeps an explicit speaker rejection distinct from a response that was
+     * lost after the speaker may already have acted.
+     */
+    sealed interface CallResult {
+        data class Success(val xml: String) : CallResult
+        data class Rejected(val httpCode: Int) : CallResult
+        data object Unknown : CallResult
+    }
+
+    /**
      * UPnP service descriptors for Sonos speakers.
      * Each defines the endpoint path and service URN.
      */
@@ -125,7 +136,20 @@ class SonosSoapClient(
         action: String,
         params: List<Pair<String, String>> = emptyList(),
         priority: Priority = Priority.BACKGROUND
-    ): String? = withContext(Dispatchers.IO) {
+    ): String? = when (val result = invokeResult(ip, port, service, action, params, priority)) {
+        is CallResult.Success -> result.xml
+        is CallResult.Rejected, CallResult.Unknown -> null
+    }
+
+    /** Same request as [invoke], retaining its transport outcome for commands. */
+    suspend fun invokeResult(
+        ip: String,
+        port: Int = 1400,
+        service: Service,
+        action: String,
+        params: List<Pair<String, String>> = emptyList(),
+        priority: Priority = Priority.BACKGROUND
+    ): CallResult = withContext(Dispatchers.IO) {
         val url = "http://$ip:$port${service.endpoint}"
         val soapAction = "\"${service.urn}#$action\""
         val body = buildEnvelope(service.urn, action, params)
@@ -158,19 +182,21 @@ class SonosSoapClient(
                             Log.e(TAG, "UPnP error $errorCode: $errorDesc")
                         }
                     }
-                    return@withContext null
+                    return@withContext CallResult.Rejected(response.code)
                 }
 
                 val xml = response.body?.string()
                 Log.d(TAG, "SOAP ← $action OK (${xml?.length ?: 0} chars)")
-                xml
+                if (xml == null) CallResult.Unknown else CallResult.Success(xml)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: IOException) {
             Log.e(TAG, "SOAP $action network error: ${e.message}")
-            null
+            CallResult.Unknown
         } catch (e: Exception) {
             Log.e(TAG, "SOAP $action unexpected error", e)
-            null
+            CallResult.Unknown
         }
     }
 

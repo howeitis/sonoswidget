@@ -2,6 +2,22 @@ package com.sycamorecreek.sonoswidget.sonos.local
 
 import android.util.Log
 
+/** Outcome for a user command once the SOAP transport has been interpreted. */
+enum class CommandTransportOutcome {
+    ACKNOWLEDGED,
+    REJECTED,
+    UNKNOWN;
+
+    val isAcknowledged: Boolean get() = this == ACKNOWLEDGED
+}
+
+/** Maps the SOAP boundary without losing a timeout/lost-response outcome. */
+internal fun commandOutcomeFor(result: SonosSoapClient.CallResult): CommandTransportOutcome = when (result) {
+    is SonosSoapClient.CallResult.Success -> CommandTransportOutcome.ACKNOWLEDGED
+    is SonosSoapClient.CallResult.Rejected -> CommandTransportOutcome.REJECTED
+    SonosSoapClient.CallResult.Unknown -> CommandTransportOutcome.UNKNOWN
+}
+
 /**
  * High-level typed wrappers for Sonos UPnP SOAP actions.
  *
@@ -30,13 +46,15 @@ class SonosControlActions(
     // ──────────────────────────────────────────────
 
     /** Start or resume playback. */
-    suspend fun play(ip: String, port: Int = 1400): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Play",
+    suspend fun play(ip: String, port: Int = 1400): Boolean = playOutcome(ip, port).isAcknowledged
+    suspend fun playOutcome(ip: String, port: Int = 1400): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Play",
             listOf("InstanceID" to INSTANCE_ID, "Speed" to "1"))
 
     /** Pause playback. */
-    suspend fun pause(ip: String, port: Int = 1400): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Pause",
+    suspend fun pause(ip: String, port: Int = 1400): Boolean = pauseOutcome(ip, port).isAcknowledged
+    suspend fun pauseOutcome(ip: String, port: Int = 1400): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Pause",
             listOf("InstanceID" to INSTANCE_ID))
 
     /** Stop playback entirely. */
@@ -45,13 +63,15 @@ class SonosControlActions(
             listOf("InstanceID" to INSTANCE_ID))
 
     /** Skip to the next track. */
-    suspend fun next(ip: String, port: Int = 1400): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Next",
+    suspend fun next(ip: String, port: Int = 1400): Boolean = nextOutcome(ip, port).isAcknowledged
+    suspend fun nextOutcome(ip: String, port: Int = 1400): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Next",
             listOf("InstanceID" to INSTANCE_ID))
 
     /** Skip to the previous track. */
-    suspend fun previous(ip: String, port: Int = 1400): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Previous",
+    suspend fun previous(ip: String, port: Int = 1400): Boolean = previousOutcome(ip, port).isAcknowledged
+    suspend fun previousOutcome(ip: String, port: Int = 1400): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Previous",
             listOf("InstanceID" to INSTANCE_ID))
 
     /**
@@ -59,7 +79,9 @@ class SonosControlActions(
      * @param positionMs Target position in milliseconds
      */
     suspend fun seek(ip: String, port: Int = 1400, positionMs: Long): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Seek",
+        seekOutcome(ip, port, positionMs).isAcknowledged
+    suspend fun seekOutcome(ip: String, port: Int = 1400, positionMs: Long): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.AV_TRANSPORT, "Seek",
             listOf(
                 "InstanceID" to INSTANCE_ID,
                 "Unit" to "REL_TIME",
@@ -225,7 +247,9 @@ class SonosControlActions(
      * @param volume Desired volume level, clamped to 0–100
      */
     suspend fun setVolume(ip: String, port: Int = 1400, volume: Int): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.RENDERING_CONTROL, "SetVolume",
+        setVolumeOutcome(ip, port, volume).isAcknowledged
+    suspend fun setVolumeOutcome(ip: String, port: Int = 1400, volume: Int): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.RENDERING_CONTROL, "SetVolume",
             listOf(
                 "InstanceID" to INSTANCE_ID,
                 "Channel" to "Master",
@@ -258,7 +282,9 @@ class SonosControlActions(
      * @param muted true to mute, false to unmute
      */
     suspend fun setMute(ip: String, port: Int = 1400, muted: Boolean): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.RENDERING_CONTROL, "SetMute",
+        setMuteOutcome(ip, port, muted).isAcknowledged
+    suspend fun setMuteOutcome(ip: String, port: Int = 1400, muted: Boolean): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.RENDERING_CONTROL, "SetMute",
             listOf(
                 "InstanceID" to INSTANCE_ID,
                 "Channel" to "Master",
@@ -296,7 +322,9 @@ class SonosControlActions(
 
     /** Sets the group volume (0–100), scaling each member proportionally. */
     suspend fun setGroupVolume(ip: String, port: Int = 1400, volume: Int): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.GROUP_RENDERING_CONTROL, "SetGroupVolume",
+        setGroupVolumeOutcome(ip, port, volume).isAcknowledged
+    suspend fun setGroupVolumeOutcome(ip: String, port: Int = 1400, volume: Int): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.GROUP_RENDERING_CONTROL, "SetGroupVolume",
             listOf(
                 "InstanceID" to INSTANCE_ID,
                 "DesiredVolume" to volume.coerceIn(0, 100).toString()
@@ -324,7 +352,9 @@ class SonosControlActions(
 
     /** Sets the group mute state for the whole group. */
     suspend fun setGroupMute(ip: String, port: Int = 1400, muted: Boolean): Boolean =
-        invokeSimple(ip, port, SonosSoapClient.Service.GROUP_RENDERING_CONTROL, "SetGroupMute",
+        setGroupMuteOutcome(ip, port, muted).isAcknowledged
+    suspend fun setGroupMuteOutcome(ip: String, port: Int = 1400, muted: Boolean): CommandTransportOutcome =
+        invokeSimpleOutcome(ip, port, SonosSoapClient.Service.GROUP_RENDERING_CONTROL, "SetGroupMute",
             listOf(
                 "InstanceID" to INSTANCE_ID,
                 "DesiredMute" to if (muted) "1" else "0"
@@ -795,12 +825,23 @@ class SonosControlActions(
         action: String,
         params: List<Pair<String, String>>,
         priority: SonosSoapClient.Priority = SonosSoapClient.Priority.CONTROL
-    ): Boolean {
-        val result = soapClient.invoke(ip, port, service, action, params, priority = priority)
-        if (result == null) {
-            Log.w(TAG, "$action failed for $ip:$port")
+    ): Boolean = invokeSimpleOutcome(ip, port, service, action, params, priority).isAcknowledged
+
+    private suspend fun invokeSimpleOutcome(
+        ip: String,
+        port: Int,
+        service: SonosSoapClient.Service,
+        action: String,
+        params: List<Pair<String, String>>,
+        priority: SonosSoapClient.Priority = SonosSoapClient.Priority.CONTROL
+    ): CommandTransportOutcome {
+        val outcome = commandOutcomeFor(
+            soapClient.invokeResult(ip, port, service, action, params, priority)
+        )
+        if (outcome == CommandTransportOutcome.UNKNOWN) {
+            Log.w(TAG, "$action outcome is unknown for $ip:$port")
         }
-        return result != null
+        return outcome
     }
 
     /**

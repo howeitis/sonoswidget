@@ -132,10 +132,14 @@ class LocalSonosController(
     /** Start or resume playback on the target speaker. */
     suspend fun play(ip: String, port: Int = 1400): Boolean =
         controlActions.play(ip, port)
+    suspend fun playOutcome(ip: String, port: Int = 1400): CommandTransportOutcome =
+        controlActions.playOutcome(ip, port)
 
     /** Pause playback on the target speaker. */
     suspend fun pause(ip: String, port: Int = 1400): Boolean =
         controlActions.pause(ip, port)
+    suspend fun pauseOutcome(ip: String, port: Int = 1400): CommandTransportOutcome =
+        controlActions.pauseOutcome(ip, port)
 
     /** Stop playback on the target speaker. */
     suspend fun stop(ip: String, port: Int = 1400): Boolean =
@@ -144,14 +148,20 @@ class LocalSonosController(
     /** Skip to the next track on the target speaker. */
     suspend fun next(ip: String, port: Int = 1400): Boolean =
         controlActions.next(ip, port)
+    suspend fun nextOutcome(ip: String, port: Int = 1400): CommandTransportOutcome =
+        controlActions.nextOutcome(ip, port)
 
     /** Skip to the previous track on the target speaker. */
     suspend fun previous(ip: String, port: Int = 1400): Boolean =
         controlActions.previous(ip, port)
+    suspend fun previousOutcome(ip: String, port: Int = 1400): CommandTransportOutcome =
+        controlActions.previousOutcome(ip, port)
 
     /** Seek to a position within the current track. */
     suspend fun seek(ip: String, port: Int = 1400, positionMs: Long): Boolean =
         controlActions.seek(ip, port, positionMs)
+    suspend fun seekOutcome(ip: String, port: Int = 1400, positionMs: Long): CommandTransportOutcome =
+        controlActions.seekOutcome(ip, port, positionMs)
 
     /** Set the play mode (shuffle/repeat combination). */
     suspend fun setPlayMode(ip: String, port: Int = 1400, playMode: String): Boolean =
@@ -180,6 +190,8 @@ class LocalSonosController(
     /** Set the volume level (0–100). */
     suspend fun setVolume(ip: String, port: Int = 1400, volume: Int): Boolean =
         controlActions.setVolume(ip, port, volume)
+    suspend fun setVolumeOutcome(ip: String, port: Int = 1400, volume: Int): CommandTransportOutcome =
+        controlActions.setVolumeOutcome(ip, port, volume)
 
     /** Get the current mute state. */
     suspend fun getMute(ip: String, port: Int = 1400): MuteInfo? =
@@ -188,6 +200,8 @@ class LocalSonosController(
     /** Set the mute state. */
     suspend fun setMute(ip: String, port: Int = 1400, muted: Boolean): Boolean =
         controlActions.setMute(ip, port, muted)
+    suspend fun setMuteOutcome(ip: String, port: Int = 1400, muted: Boolean): CommandTransportOutcome =
+        controlActions.setMuteOutcome(ip, port, muted)
 
     /** Get the whole-group volume (0–100). Invoke on the group coordinator. */
     suspend fun getGroupVolume(ip: String, port: Int = 1400): VolumeInfo? =
@@ -196,6 +210,8 @@ class LocalSonosController(
     /** Set the whole-group volume (0–100). Invoke on the group coordinator. */
     suspend fun setGroupVolume(ip: String, port: Int = 1400, volume: Int): Boolean =
         controlActions.setGroupVolume(ip, port, volume)
+    suspend fun setGroupVolumeOutcome(ip: String, port: Int = 1400, volume: Int): CommandTransportOutcome =
+        controlActions.setGroupVolumeOutcome(ip, port, volume)
 
     /** Get the whole-group mute state. Invoke on the group coordinator. */
     suspend fun getGroupMute(ip: String, port: Int = 1400): MuteInfo? =
@@ -204,6 +220,8 @@ class LocalSonosController(
     /** Set the whole-group mute state. Invoke on the group coordinator. */
     suspend fun setGroupMute(ip: String, port: Int = 1400, muted: Boolean): Boolean =
         controlActions.setGroupMute(ip, port, muted)
+    suspend fun setGroupMuteOutcome(ip: String, port: Int = 1400, muted: Boolean): CommandTransportOutcome =
+        controlActions.setGroupMuteOutcome(ip, port, muted)
 
     /** Get the full zone group topology (all speakers and groupings). */
     suspend fun getZoneGroupState(ip: String, port: Int = 1400): List<ZoneGroup>? =
