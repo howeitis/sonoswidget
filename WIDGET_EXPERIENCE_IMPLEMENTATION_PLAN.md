@@ -232,6 +232,25 @@ the operation; both widget instances display one consistent target and recovery.
 
 ## R3 — Protect newer intent from enrichment and old rollbacks (P1)
 
+**Implementation handoff (2026-09-07):** In progress. The repository now has a
+single serialized widget-state publication path, per-field revisions, and
+operation ownership for optimistic playback, volume, and mute changes.
+`pollLocal()` applies its essential result only to fields unchanged during the
+poll, and applies queue/favorites and artwork as narrow patches to the latest
+state rather than republishing an old snapshot. Room changes discard
+room-scoped optimism. Focused policy tests were added in
+`data/WidgetStateRevisionPolicyTest.kt`.
+
+Validation is not yet complete: an isolated Java 21 Gradle run provisioned its
+toolchain and dependencies but failed compilation with widespread unresolved
+project-package imports in `SonosRepository.kt`, including code predating R3.
+The first follow-up should run the normal project gate from the established
+cache, determine why that compiler invocation lost the app source classpath,
+and then execute the R3 test plus the full incremental gate. The remaining R3
+acceptance tests still need controllable delayed controller/widget-store fakes
+for pause during artwork, stale mute/play failure, room switching, and ordered
+two-widget publication.
+
 Evidence: `pollLocal()` applies optimism before essential publication, then
 publishes its old snapshot again after enrichment. Its target-generation check
 does not detect newer actions within the same room. Failure rollback likewise

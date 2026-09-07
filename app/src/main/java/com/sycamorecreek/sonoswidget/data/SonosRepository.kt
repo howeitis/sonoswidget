@@ -36,6 +36,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
+import kotlinx.coroutines.await
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -115,6 +116,9 @@ class SonosRepository private constructor(
 
     private val _widgetState = MutableStateFlow(SonosWidgetState())
     val widgetState: StateFlow<SonosWidgetState> = _widgetState.asStateFlow()
+    /** Serializes every visible write so all widget instances see publication order. */
+    private val widgetStateMutex = Mutex()
+    private val stateRevisions = WidgetStateRevisionPolicy()
 
     // ──────────────────────────────────────────────
     // Connection mode tracking
@@ -172,8 +176,11 @@ class SonosRepository private constructor(
     // flicker. Cleared once the speaker's real state agrees or the window expires.
     private var optimisticPlayback: PlaybackState? = null
     private var optimisticPlaybackUntilMs: Long = 0L
+    private var optimisticPlaybackOwnership: WidgetStateRevisionPolicy.Ownership? = null
     private var optimisticVolume: Int? = null
     private var optimisticVolumeUntilMs: Long = 0L
+    private var optimisticVolumeOwnership: WidgetStateRevisionPolicy.Ownership? = null
+    private var optimisticMuteOwnership: WidgetStateRevisionPolicy.Ownership? = null
     /** Short lock for accepting volume intent; it never covers a speaker command or refresh. */
     private val volumeIntentMutex = Mutex()
     private val volumeIntentScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -502,8 +509,7 @@ class SonosRepository private constructor(
         if (cloudState != null) {
             Log.d(TAG, "Step 3: Cloud API connected — ${cloudState.zones.size} zone(s), state=${cloudState.playbackState}")
             activeSpeakerIp = null
-            _widgetState.value = cloudState
-            WidgetStateStore.pushState(context, cloudState)
+            pushState(cloudState)
             cacheConnection(ConnectionMode.CLOUD)
             return true
         }
@@ -568,7 +574,7 @@ class SonosRepository private constructor(
         val port = activeSpeakerPort
         val targetGeneration = roomTargetGeneration
         val targetZoneId = activeZoneId
-
+        val pollSnapshot = snapshotStateRevisions()
         val (transportInfo, positionInfo, volumeInfo) =
             controller.pollPlaybackState(ip, port)
 
@@ -728,8 +734,8 @@ class SonosRepository private constructor(
         )
         state = applyOptimisticOverrides(state)
         if (!isPollTargetCurrent(targetGeneration, targetZoneId, ip)) return null
-        _widgetState.value = state
-        WidgetStateStore.pushState(context, state)
+        pushPollState(state, pollSnapshot)
+        val enrichmentSnapshot = snapshotStateRevisions()
 
         if (trackChanged) {
             lastQueueTrackNum = currentTrackNum
@@ -762,6 +768,10 @@ class SonosRepository private constructor(
                 hasLocalGrouping = cachedZoneGroups != null
             )
         )
+        if (!isFieldUnchanged(enrichmentSnapshot, WidgetStateRevisionPolicy.Field.ENRICHMENT)) {
+            return _widgetState.value
+        }
+        pushState(state, setOf(WidgetStateRevisionPolicy.Field.ENRICHMENT))
 
         if (!isPollTargetCurrent(targetGeneration, targetZoneId, ip)) return null
 
@@ -803,10 +813,12 @@ class SonosRepository private constructor(
         cacheConnection(activeConnectionMode)
 
         if (!isPollTargetCurrent(targetGeneration, targetZoneId, ip)) return null
-        val finalState = applyOptimisticOverrides(state)
-        _widgetState.value = finalState
-        WidgetStateStore.pushState(context, finalState)
-        return finalState
+        // Artwork is the only remaining enrichment.  It is deliberately merged
+        // into the newest state and never republishes the poll's old snapshot.
+        if (isFieldUnchanged(enrichmentSnapshot, WidgetStateRevisionPolicy.Field.ARTWORK)) {
+            pushState(state, setOf(WidgetStateRevisionPolicy.Field.ARTWORK))
+        }
+        return _widgetState.value
     }
 
     /**
@@ -867,8 +879,7 @@ class SonosRepository private constructor(
                     isRateLimited = true,
                     errorMessage = null
                 )
-                _widgetState.value = rateLimitState
-                WidgetStateStore.pushState(context, rateLimitState)
+                pushState(rateLimitState)
                 return rateLimitState
             }
 
@@ -890,8 +901,7 @@ class SonosRepository private constructor(
 
         val displayState = applyOptimisticOverrides(successState)
         if (targetGeneration != roomTargetGeneration) return null
-        _widgetState.value = displayState
-        WidgetStateStore.pushState(context, displayState)
+        pushState(displayState)
         return displayState
     }
 
@@ -958,8 +968,7 @@ class SonosRepository private constructor(
             errorMessage = expiredErrorMessage(),
             lastUpdatedMs = System.currentTimeMillis()
         )
-        _widgetState.value = state
-        WidgetStateStore.pushState(context, state)
+        pushState(state)
 
         // Arm a one-shot reconnect that fires the moment Wi-Fi comes back,
         // even if the polling service has been torn down by then.
@@ -989,8 +998,7 @@ class SonosRepository private constructor(
     private suspend fun pushErrorMessage(message: String) {
         errorBannerExpiresMs = System.currentTimeMillis() + ERROR_BANNER_DISMISS_MS
         val state = _widgetState.value.copy(errorMessage = message)
-        _widgetState.value = state
-        WidgetStateStore.pushState(context, state)
+        pushState(state)
     }
 
     // ──────────────────────────────────────────────
@@ -1161,7 +1169,15 @@ class SonosRepository private constructor(
     /** Drops the playback override and restores [base] while keeping any error banner. */
     private suspend fun revertPlaybackOptimism(base: PlaybackState) {
         optimisticPlayback = null
-        pushState(_widgetState.value.copy(playbackState = base))
+        val ownership = optimisticPlaybackOwnership
+        optimisticPlaybackOwnership = null
+        if (ownership != null) {
+            pushState(
+                _widgetState.value.copy(playbackState = base),
+                setOf(WidgetStateRevisionPolicy.Field.PLAYBACK),
+                ownership
+            )
+        }
     }
 
     suspend fun seek(positionMs: Long): Boolean {
@@ -1185,7 +1201,7 @@ class SonosRepository private constructor(
         )
         if (outcome == CommandOutcome.DEFINITE_FAILURE) {
             optimisticVolume = null
-            pushState(_widgetState.value.copy(volume = base))
+            revertVolumeOptimism(base)
         }
         return outcome.isAcknowledged
     }
@@ -1237,7 +1253,7 @@ class SonosRepository private constructor(
                     }
                     if (restore != null) {
                         optimisticVolume = null
-                        pushState(_widgetState.value.copy(volume = restore))
+                        revertVolumeOptimism(restore)
                     }
                 }
                 CommandOutcome.UNKNOWN -> Unit // Keep the optimistic value until reconciliation.
@@ -1260,13 +1276,30 @@ class SonosRepository private constructor(
         acknowledgedVolume = null
     }
 
+    /** A room switch is a new destination; no optimistic value may cross it. */
+    private fun discardRoomScopedOptimism() {
+        optimisticPlayback = null
+        optimisticPlaybackOwnership = null
+        optimisticVolume = null
+        optimisticVolumeOwnership = null
+        optimisticMuteOwnership = null
+    }
+
     suspend fun setMute(muted: Boolean): Boolean {
         if (!canExecute(_widgetState.value.capabilities.canMute, "mute")) return false
         val base = _widgetState.value.volumeMuted
         // Optimistic + force a mute refetch on the re-poll that routeCommand runs.
         cachedMuted = muted
         muteDirty = true
-        pushState(_widgetState.value.copy(volumeMuted = muted))
+        val ownership = widgetStateMutex.withLock {
+            stateRevisions.claim(setOf(WidgetStateRevisionPolicy.Field.PLAYBACK))
+        }
+        optimisticMuteOwnership = ownership
+        pushState(
+            _widgetState.value.copy(volumeMuted = muted),
+            setOf(WidgetStateRevisionPolicy.Field.PLAYBACK),
+            ownership
+        )
         val outcome = routeCommand(
             local = { ip, port ->
                 if (isActiveGroupGrouped()) controller.setGroupMuteOutcome(ip, port, muted)
@@ -1275,8 +1308,15 @@ class SonosRepository private constructor(
             cloud = { false }
         )
         if (outcome == CommandOutcome.DEFINITE_FAILURE) {
-            cachedMuted = base
-            pushState(_widgetState.value.copy(volumeMuted = base))
+            if (optimisticMuteOwnership === ownership) {
+                optimisticMuteOwnership = null
+                cachedMuted = base
+                pushState(
+                    _widgetState.value.copy(volumeMuted = base),
+                    setOf(WidgetStateRevisionPolicy.Field.PLAYBACK),
+                    ownership
+                )
+            }
         }
         return outcome.isAcknowledged
     }
@@ -1295,6 +1335,7 @@ class SonosRepository private constructor(
     suspend fun switchZone(zoneId: String): Boolean {
         if (activeConnectionMode == ConnectionMode.CLOUD) {
             discardVolumeIntentForRoomChange()
+            discardRoomScopedOptimism()
             val generation = ++roomTargetGeneration
             publishSwitchingRoom(zoneId, _widgetState.value.zones.find { it.id == zoneId }?.displayName.orEmpty())
             cloudController.setActiveGroup(zoneId)
@@ -1306,6 +1347,7 @@ class SonosRepository private constructor(
             val member = group.members.find { it.uuid == zoneId }
             if (member != null) {
                 discardVolumeIntentForRoomChange()
+                discardRoomScopedOptimism()
                 val coordinator = group.members.find { it.isCoordinator } ?: member
                 val generation = ++roomTargetGeneration
                 activeSpeakerIp = coordinator.ip
@@ -1493,10 +1535,9 @@ class SonosRepository private constructor(
         val isCurrentlyGrouped = activeGroup.members.any { it.uuid == speakerUuid }
 
         val previousState = _widgetState.value
-        _widgetState.value = buildOptimisticGroupState(
+        pushState(buildOptimisticGroupState(
             previousState, speakerUuid, !isCurrentlyGrouped, activeGroup.groupId
-        )
-        WidgetStateStore.pushState(context, _widgetState.value)
+        ))
 
         val success = if (isCurrentlyGrouped) {
             Log.d(TAG, "Ungrouping ${targetMember.zoneName} from ${activeGroup.coordinatorId}")
@@ -1515,8 +1556,7 @@ class SonosRepository private constructor(
             pollAndUpdate()
         } else {
             Log.w(TAG, "Group toggle failed — reverting optimistic state")
-            _widgetState.value = previousState
-            WidgetStateStore.pushState(context, previousState)
+            pushState(previousState)
         }
 
         return success
@@ -1550,8 +1590,7 @@ class SonosRepository private constructor(
         val allGroupedZones = previousState.zones.map { zone ->
             zone.copy(groupId = activeGroup.groupId, isGroupCoordinator = zone.id == coordinatorUuid)
         }
-        _widgetState.value = previousState.copy(zones = allGroupedZones)
-        WidgetStateStore.pushState(context, _widgetState.value)
+        pushState(previousState.copy(zones = allGroupedZones))
 
         var allSucceeded = true
         for (member in ungroupedMembers) {
@@ -1689,24 +1728,140 @@ class SonosRepository private constructor(
     // Optimistic UI helpers
     // ──────────────────────────────────────────────
 
-    /** Pushes a state to the StateFlow and the Glance widget immediately. */
-    private suspend fun pushState(newState: SonosWidgetState) {
-        _widgetState.value = newState
-        WidgetStateStore.pushState(context, newState)
+    /**
+     * The only path that publishes visible state.  Serializing the StateFlow and
+     * Glance writes prevents two widget instances receiving the same writes in
+     * opposite orders.  Field revisions let slow enrichment prove it is still
+     * writing the state it originally observed.
+     */
+    private suspend fun pushState(
+        newState: SonosWidgetState,
+        fields: Set<WidgetStateRevisionPolicy.Field> = WidgetStateRevisionPolicy.Field.entries.toSet(),
+        ownership: WidgetStateRevisionPolicy.Ownership? = null
+    ): Boolean = widgetStateMutex.withLock {
+        if (ownership != null && fields.any { !stateRevisions.stillOwns(ownership, it) }) {
+            return@withLock false
+        }
+        val published = mergeStateFields(_widgetState.value, newState, fields)
+        _widgetState.value = published
+        if (ownership == null) stateRevisions.record(fields)
+        WidgetStateStore.pushState(context, published)
+        true
+    }
+
+    /** Applies a narrow asynchronous patch without restoring unrelated old data. */
+    private fun mergeStateFields(
+        current: SonosWidgetState,
+        incoming: SonosWidgetState,
+        fields: Set<WidgetStateRevisionPolicy.Field>
+    ): SonosWidgetState {
+        if (fields.size == WidgetStateRevisionPolicy.Field.entries.size) return incoming
+        var merged = current
+        if (WidgetStateRevisionPolicy.Field.PLAYBACK in fields) {
+            merged = merged.copy(
+                playbackState = incoming.playbackState,
+                volumeMuted = incoming.volumeMuted,
+                shuffleEnabled = incoming.shuffleEnabled,
+                repeatMode = incoming.repeatMode
+            )
+        }
+        if (WidgetStateRevisionPolicy.Field.VOLUME in fields) merged = merged.copy(volume = incoming.volume)
+        if (WidgetStateRevisionPolicy.Field.ENRICHMENT in fields) {
+            merged = merged.copy(
+                queue = incoming.queue,
+                favorites = incoming.favorites,
+                capabilities = incoming.capabilities
+            )
+        }
+        if (WidgetStateRevisionPolicy.Field.ARTWORK in fields) {
+            merged = merged.copy(colorPalette = incoming.colorPalette, artworkVersion = incoming.artworkVersion)
+        }
+        if (WidgetStateRevisionPolicy.Field.MEDIA in fields) {
+            merged = merged.copy(currentTrack = incoming.currentTrack, currentSource = incoming.currentSource)
+        }
+        if (WidgetStateRevisionPolicy.Field.ROOM in fields) {
+            merged = merged.copy(activeZone = incoming.activeZone, zones = incoming.zones, connectionMode = incoming.connectionMode)
+        }
+        if (WidgetStateRevisionPolicy.Field.STATUS in fields) {
+            merged = merged.copy(
+                isReconnecting = incoming.isReconnecting,
+                isRateLimited = incoming.isRateLimited,
+                isOffline = incoming.isOffline,
+                isUpdating = incoming.isUpdating,
+                pendingOperations = incoming.pendingOperations,
+                lastEssentialRefreshMs = incoming.lastEssentialRefreshMs,
+                isContentStale = incoming.isContentStale,
+                errorMessage = incoming.errorMessage,
+                showPermissionHint = incoming.showPermissionHint,
+                offlineSpeakerIds = incoming.offlineSpeakerIds,
+                lastUpdatedMs = incoming.lastUpdatedMs
+            )
+        }
+        return merged
+    }
+
+    private suspend fun snapshotStateRevisions(): WidgetStateRevisionPolicy.Snapshot =
+        widgetStateMutex.withLock { stateRevisions.snapshot() }
+
+    private suspend fun isFieldUnchanged(
+        snapshot: WidgetStateRevisionPolicy.Snapshot,
+        field: WidgetStateRevisionPolicy.Field
+    ): Boolean = widgetStateMutex.withLock { stateRevisions.unchangedSince(snapshot, field) }
+
+    /** Publishes only poll fields that no command changed while the poll was in flight. */
+    private suspend fun pushPollState(
+        incoming: SonosWidgetState,
+        snapshot: WidgetStateRevisionPolicy.Snapshot
+    ): Boolean = widgetStateMutex.withLock {
+        val fields = WidgetStateRevisionPolicy.Field.entries.filterTo(mutableSetOf()) {
+            stateRevisions.unchangedSince(snapshot, it)
+        }
+        if (fields.isEmpty()) return@withLock false
+        val published = mergeStateFields(_widgetState.value, incoming, fields)
+        _widgetState.value = published
+        stateRevisions.record(fields)
+        WidgetStateStore.pushState(context, published)
+        true
     }
 
     /** Optimistically flips play/pause in the UI and holds it over lagging polls. */
     private suspend fun applyOptimisticPlayback(target: PlaybackState) {
         optimisticPlayback = target
         optimisticPlaybackUntilMs = System.currentTimeMillis() + OPTIMISTIC_HOLD_MS
-        pushState(_widgetState.value.copy(playbackState = target))
+        optimisticPlaybackOwnership = widgetStateMutex.withLock {
+            stateRevisions.claim(setOf(WidgetStateRevisionPolicy.Field.PLAYBACK))
+        }
+        pushState(
+            _widgetState.value.copy(playbackState = target),
+            setOf(WidgetStateRevisionPolicy.Field.PLAYBACK),
+            optimisticPlaybackOwnership
+        )
     }
 
     /** Optimistically sets the volume in the UI and holds it over lagging polls. */
     private suspend fun applyOptimisticVolume(target: Int) {
         optimisticVolume = target
         optimisticVolumeUntilMs = System.currentTimeMillis() + OPTIMISTIC_HOLD_MS
-        pushState(_widgetState.value.copy(volume = target))
+        optimisticVolumeOwnership = widgetStateMutex.withLock {
+            stateRevisions.claim(setOf(WidgetStateRevisionPolicy.Field.VOLUME))
+        }
+        pushState(
+            _widgetState.value.copy(volume = target),
+            setOf(WidgetStateRevisionPolicy.Field.VOLUME),
+            optimisticVolumeOwnership
+        )
+    }
+
+    private suspend fun revertVolumeOptimism(base: Int) {
+        val ownership = optimisticVolumeOwnership
+        optimisticVolumeOwnership = null
+        if (ownership != null) {
+            pushState(
+                _widgetState.value.copy(volume = base),
+                setOf(WidgetStateRevisionPolicy.Field.VOLUME),
+                ownership
+            )
+        }
     }
 
     /**
