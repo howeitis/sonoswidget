@@ -36,6 +36,28 @@ Observed locally on 2026-09-06:
 4. **U1:** correct the expanded layout's minimum-size budget and validate it.
 5. Complete the remaining original phase acceptance criteria and publish evidence.
 
+### Package status — 2026-09-07
+
+| Package | Status |
+|---|---|
+| B1 build stack / daemon criteria | Complete (`73e92b5`), see the record below |
+| B2 lint and CI gates | Complete, 0 errors / 88 warnings |
+| R1 pending state and lifecycle | Complete, see the R1 completion record |
+| R2 action and draft targeting | Implemented (`08b30a4`); acceptance tests not yet written |
+| R3 revision ordering and ownership | Complete and CI-validated, see the R3 completion record |
+| R4 transport outcomes | Implemented (`aee37da`); transport-boundary tests are thin |
+| R5 volume intent coalescing | Implemented (`f5f1c8f`); `VolumeIntentPolicyTest` covers convergence, clamping and room scoping as pure policy. What is unproven is the lock scope itself — that a tap arriving during a slow reconcile is not made to wait — which needs the intent bookkeeping behind a seam like `WidgetStatePublisher`'s |
+| U1 expanded minimum size | Bucket raised (`74839ad`); render-based validation still outstanding |
+
+`main` was red from `7e600d1` until `707d796`; treat any completion claim made
+between those commits as unverified, because nothing compiled. The next work is
+R2, R4, R5 and U1 acceptance evidence, in that order of cheapness.
+
+Note for whoever picks this up in a cloud session: this environment's egress
+policy blocks Google's Maven and SDK hosts, so no Android build can run there.
+CI is the only gate available — push early and read the run rather than
+reporting a local result that was never produced.
+
 Use separate reviewable commits for build migration, lint/CI, reliability, and
 layout. No plugin upgrade or UI screenshot establishes that runtime reliability
 is complete. Do not mark a package done without its acceptance evidence. Keep
@@ -212,6 +234,41 @@ does not clear loading state; widget fixtures exercise decoded state, not just
 directly constructed model objects. Replace the misleading test that labels
 every deserialize call a process restart.
 
+**R1 completion record (2026-09-07).** Complete. Display decoding already
+retained operations; two gaps in opposite directions remained, and both are now
+closed and covered.
+
+*Polling erased running requests.* `WidgetStateMapper` never sets
+`pendingOperations`, so every polled state carried an empty list. Whenever a
+poll's STATUS field was still unclaimed, publishing that list cleared
+"Preparing favorite" while the playlist was still loading. Operations are now
+exempt from polling inside `WidgetStatePublisher` rather than at each assembly
+site, so no future poll builder can reintroduce this. `pollCloud` was also
+bypassing the guarded path entirely — a full `pushState` with no snapshot — and
+now snapshots before its network call and publishes through `pushPollState`.
+
+*Display decoding resurrected dead requests.* Retaining operations is right
+within the publishing process and wrong across process death: the request lives
+in the memory of a process that is gone, so it can never complete, fail or be
+cancelled, and the widget showed "Switching room" until the next poll — after an
+idle teardown, up to fifteen minutes. `WidgetStateStore` now stamps each
+published state with a per-process session id, and `deserializeForDisplay`,
+used by the widget's render path, keeps operations only from the publishing
+process. State written before session identity existed is treated as an earlier
+process, which is what it is.
+
+This replaced `deserializeForProcessRecovery`. That function had no production
+caller: its test asserted a lifecycle policy the app never applied, which is
+exactly the unearned completion claim this plan warns against. The session
+policy is the same rule, actually wired to the render path.
+
+Covered by `WidgetStatePublisherTest` (a poll cannot clear a running request;
+only the request's own completion retires it) and `WidgetStateStoreTest`
+(operations kept from the publishing session, dropped from an earlier process,
+and dropped from state stored before session identity). `WidgetStateFixturesTest`
+now decodes through `deserializeForDisplay`, so it covers the decoder its name
+claims.
+
 ## R2 — Bind actions and grouping drafts to their original room (P1)
 
 Evidence: `widget/WidgetActions.kt:canDispatch` checks availability but not the
@@ -232,24 +289,47 @@ the operation; both widget instances display one consistent target and recovery.
 
 ## R3 — Protect newer intent from enrichment and old rollbacks (P1)
 
-**Implementation handoff (2026-09-07):** In progress. The repository now has a
-single serialized widget-state publication path, per-field revisions, and
-operation ownership for optimistic playback, volume, and mute changes.
-`pollLocal()` applies its essential result only to fields unchanged during the
-poll, and applies queue/favorites and artwork as narrow patches to the latest
-state rather than republishing an old snapshot. Room changes discard
-room-scoped optimism. Focused policy tests were added in
-`data/WidgetStateRevisionPolicyTest.kt`.
+**R3 completion record (2026-09-07).** Complete and validated in CI.
 
-Validation is not yet complete: an isolated Java 21 Gradle run provisioned its
-toolchain and dependencies but failed compilation with widespread unresolved
-project-package imports in `SonosRepository.kt`, including code predating R3.
-The first follow-up should run the normal project gate from the established
-cache, determine why that compiler invocation lost the app source classpath,
-and then execute the R3 test plus the full incremental gate. The remaining R3
-acceptance tests still need controllable delayed controller/widget-store fakes
-for pause during artwork, stale mute/play failure, room switching, and ordered
-two-widget publication.
+The repository has a single serialized widget-state publication path, per-field
+revisions, and operation ownership for optimistic playback, volume and mute
+changes. `pollLocal()` applies its essential result only to fields unchanged
+during the poll, and applies queue/favorites and artwork as narrow patches to
+the latest state rather than republishing an old snapshot. Room changes discard
+room-scoped optimism. `pollCloud()` was migrated onto the same guarded path
+during R1.
+
+*The earlier validation failure was not a classpath problem.* `7e600d1` added
+`import kotlinx.coroutines.await`, which does not exist in
+`kotlinx-coroutines-core` — `Deferred.await()` is a member function needing no
+import. In Kotlin an unresolved import cascades into unresolved references
+throughout the file, which is what the previous session saw and attributed to a
+lost app source classpath. CI had been failing `:app:compileDebugKotlin` on
+every commit since, so R3's code had never compiled. Removing the import is
+`707d796`; the gate passed on it in
+[run 34160611073](https://github.com/howeitis/sonoswidget/actions/runs/34160611073).
+
+*The acceptance tests needed a seam, not fakes of the controller.*
+`SonosRepository` cannot be constructed in a JVM unit test — it needs a
+`Context`, `android.util.Log` and Hilt — so the publication path itself (the
+lock, the revision ledger, the field merge, both state writes) moved into
+`WidgetStatePublisher`, parameterized by a suspend sink. The repository keeps
+its `_widgetState` name and every read site; only the two `_widgetState.value =`
+assignments moved, and the push/snapshot helpers became one-line delegates.
+Publication ordering is unchanged: record, merge, flow write and sink still all
+happen under one lock.
+
+`WidgetStatePublisherTest` covers each acceptance scenario against the real
+publication path rather than the ledger alone: pause during delayed artwork
+stays paused while the artwork still lands; a poll that outlived a tap keeps the
+tap and applies its untouched fields; an older failure cannot undo a newer
+success while the newest command can still roll itself back; a mute failure
+cannot undo a poll that confirmed it afterwards, though a tap that still owns
+its field may undo its own guess; room A's optimism cannot restore its volume
+after a switch to room B; and a stalled publication blocks a newer one instead
+of being overtaken, so what the widgets last received is what the app believes
+it published. That last test drives genuinely concurrent coroutines, which is
+why `kotlinx-coroutines-core` was added as a test dependency.
 
 Evidence: `pollLocal()` applies optimism before essential publication, then
 publishes its old snapshot again after enrichment. Its target-generation check
