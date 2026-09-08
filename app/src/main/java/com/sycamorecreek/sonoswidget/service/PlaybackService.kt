@@ -20,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -42,9 +41,10 @@ import kotlinx.coroutines.sync.Mutex
  *
  * Polling strategy (active mode):
  *   - PLAYING:      Poll every 2 seconds (for progress bar updates)
- *   - PAUSED:       Poll every 10 seconds (for external state changes)
+ *   - PAUSED:       Poll every 4 seconds (for external state changes)
  *   - STOPPED:      Poll every 15 seconds (idle monitoring)
- *   - DISCONNECTED: Exponential backoff 30s → 60s → 120s → 240s → 300s (capped)
+ *   - DISCONNECTED: Exponential backoff from 30s, capped at 60s while Wi-Fi is
+ *                   attached and 300s off Wi-Fi
  *
  * Battery budget per PRD §12.2:
  *   - Active playback (4 hrs/day): < 1.5% battery via foreground service + push events
@@ -149,6 +149,8 @@ class PlaybackService : Service() {
     private val pollMutex = Mutex()
     /** A user/network request received mid-poll gets one immediate follow-up. */
     private var pollRequested = false
+    /** Lets a refresh cut short the loop's wait instead of riding out the backoff. */
+    private val pollWake = PollWakeSignal()
 
     private lateinit var repository: SonosRepository
     private lateinit var networkReceiver: NetworkChangeReceiver
@@ -172,6 +174,9 @@ class PlaybackService : Service() {
                 if (!repository.isConnected) {
                     Log.d(TAG, "Network restored — attempting re-discovery")
                     consecutiveDisconnects = 0 // Reset backoff on network change
+                    // Also wake the loop; otherwise it sleeps out the old
+                    // backoff and the reconnected speaker goes unpolled.
+                    pollWake.requestNow()
                     pollOnce()
                 }
             }
@@ -191,6 +196,9 @@ class PlaybackService : Service() {
                 Log.d(TAG, "Immediate poll requested — resetting backoff")
                 consecutiveDisconnects = 0
                 idleStartMs = 0L
+                // The immediate poll below refreshes once; this also restores
+                // the loop's cadence instead of leaving it on the old deadline.
+                pollWake.requestNow()
                 serviceScope.launch {
                     try {
                         pollOnce()
@@ -310,7 +318,9 @@ class PlaybackService : Service() {
                 }
 
                 val interval = computeNextInterval()
-                delay(interval)
+                if (pollWake.awaitNextPoll(interval)) {
+                    Log.d(TAG, "Wait cut short by a refresh request")
+                }
             }
 
             Log.d(TAG, "Polling loop ended")

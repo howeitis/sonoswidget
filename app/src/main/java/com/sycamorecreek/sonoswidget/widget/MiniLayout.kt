@@ -5,6 +5,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceComposable
 import androidx.glance.GlanceModifier
+import androidx.glance.action.actionParametersOf
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Column
@@ -105,7 +106,7 @@ fun MiniLayout(
             PlayPauseButton(
                 isPlaying = state.playbackState == PlaybackState.PLAYING,
                 enabled = !controlsDisabled && state.capabilities.canPlayPause,
-                action = actionRunCallback<PlayPauseAction>(),
+                action = actionRunCallback<PlayPauseAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
                 size = 40.dp,
                 iconSize = 20.dp
             )

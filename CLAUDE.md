@@ -6,13 +6,20 @@ Android home screen widget for controlling Sonos speakers. Built with **Jetpack 
 
 **Package:** `com.sycamorecreek.sonoswidget`
 **SDK:** compileSdk 36, minSdk 35, targetSdk 36 (Android 16)
-**Kotlin:** 2.1.21, JVM target 17
+**Kotlin:** built into AGP 9.4, JVM target 17
 
 ## Build
 
 ```bash
-JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew assembleDebug
+./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
+
+This is the release gate, and it is what CI runs. The Gradle daemon is pinned to
+Eclipse Temurin 21 by `gradle/gradle-daemon-jvm.properties` and provisioned
+automatically on a clean machine — criteria take precedence over `JAVA_HOME`, so
+do not set one; only a wrapper-supported Java is needed to launch the wrapper.
+Emitted bytecode stays at Java 17: the daemon JVM and the compile target are
+separate settings.
 
 APK output: `app/build/outputs/apk/debug/app-debug.apk`
 
@@ -23,7 +30,8 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 ```
 widget/          UI layer (Glance composables, state model, actions)
 service/         Bridge layer (polling, state mapping, album art, theme)
-data/            Repository (single source of truth, connection management)
+data/            Repository (single source of truth, connection management,
+                 widget state publication)
 sonos/local/     UPnP/SOAP transport (SSDP, mDNS, SOAP client)
 sonos/cloud/     Sonos Cloud REST API (OAuth, cloud controller)
 app/             Entry point (Application, CompanionActivity)
@@ -33,7 +41,10 @@ app/             Entry point (Application, CompanionActivity)
 
 | File | Purpose |
 |------|---------|
-| `SonosRepository.kt` | Central orchestrator. Discovery, polling, command routing, zone management. ~1100 lines. |
+| `SonosRepository.kt` | Central orchestrator. Discovery, polling, command routing, zone management. ~2100 lines. |
+| `WidgetStatePublisher.kt` | The only path that publishes visible state. Serializes writes, merges narrow field patches, enforces revision and ownership rules. |
+| `WidgetStateRevisionPolicy.kt` | Per-field revision ledger backing the publisher: snapshots, ownership claims, staleness checks. |
+| `WidgetLayoutPolicy.kt` | Size-bucket thresholds and `bucketFor()`, shared by the widget and its tests. |
 | `SonosControlActions.kt` | SOAP action builders and XML parsers (transport, volume, queue, zone groups). |
 | `SonosSoapClient.kt` | Low-level HTTP POST of SOAP envelopes to speakers on port 1400. |
 | `PlaybackService.kt` | Foreground service driving the poll loop with adaptive intervals. |
@@ -47,7 +58,7 @@ app/             Entry point (Application, CompanionActivity)
 | `GlassComponents.kt` | Shared Glance building blocks: `ImmersiveSurface`, icon buttons, chips, section headers. |
 | `WidgetBackgroundRenderer.kt` | Renders the blurred/dimmed album-art widget background (plus palette-gradient fallback), cached to disk like album art. |
 | `AlbumArtLoader.kt` | Downloads album art via Coil, caches to internal storage as WebP. |
-| `SonosWidgetState.kt` | Data classes for widget state (`SonosWidgetState`, `Track`, `Zone`, `QueueItem`, etc.). |
+| `SonosWidgetState.kt` | Data classes for widget state (`SonosWidgetState`, `Track`, `Zone`, `QueueItem`, `PendingWidgetOperation`, etc.). |
 | `WidgetActions.kt` | Glance `ActionCallback` implementations for play/pause, skip, volume, grouping, etc. |
 
 ### Connection Flow
@@ -78,7 +89,7 @@ pollOnce() → repository.pollAndUpdate() → pollLocal() or pollCloud()
 ```
 MINI_SIZE  = 240×80dp   → MiniLayout (lock screen)
 HALF_SIZE  = 320×180dp  → CompactLayout (4x2)
-FULL_SIZE  = 400×340dp  → ExpandedLayout (5x5+, 6x5)
+FULL_SIZE  = 400×460dp  → ExpandedLayout (only where the host fits its player budget)
 ```
 
 Android widget dp formula: `(cellCount × 73) - 16`. A 6x5 grid ≈ 422×349dp.
@@ -94,9 +105,42 @@ Android widget dp formula: `(cellCount × 73) - 16`. A 6x5 grid ≈ 422×349dp.
 
 ## State Persistence
 
-Widget state flows: `SonosRepository` → `WidgetStateMapper` → `WidgetStateStore.pushState()` → Glance `updateAppWidgetState()` → `SonosWidget.provideContent()`.
+Widget state flows: `SonosRepository` → `WidgetStateMapper` → `WidgetStatePublisher` →
+`WidgetStateStore.pushState()` → Glance `updateAppWidgetState()` → `SonosWidget.provideContent()`.
 
 **Critical:** Glance's `updateAppWidgetState` lambda receives `MutablePreferences` that must be modified **in-place**. Do NOT call `.toMutablePreferences()` — that creates a discarded copy.
+
+### Publication rules (`WidgetStatePublisher`)
+
+Every visible write goes through this one path; do not assign widget state
+anywhere else. It exists because a poll can take longer than a tap, and the
+naive fix — republishing the poll's own snapshot — silently undoes newer intent.
+
+- **Serialized.** The StateFlow update and the Glance write happen under one
+  lock, so two widget instances cannot receive the same writes in opposite
+  orders. The sink runs while the lock is held and must not call back in.
+- **Field revisions.** A caller snapshots before slow work and may write only
+  fields nobody changed since. `publishPoll` drops the rest rather than
+  publishing them.
+- **Operation ownership.** An optimistic command claims its fields; its failure
+  may roll back only while it still owns them, so an older failure cannot undo a
+  newer success.
+- **Narrow patches.** Enrichment (queue, favorites, artwork) merges into the
+  *current* state by field, never by republishing an older whole state.
+- **Pending operations are exempt from polling.** They are the app's own
+  in-flight requests, which no speaker response reports or cancels. Only an
+  operation's own completion or failure retires it.
+
+### Pending operations across process death
+
+`WidgetStateStore.serialize` stamps each state with a per-process session id, and
+the widget renders through `deserializeForDisplay`, which keeps pending
+operations only when they came from the running process. A request lives in the
+memory of the process that started it: once that process is gone it can never
+complete, fail or be cancelled, and rendering it as in-flight would leave
+"Switching room" on screen until the next poll — after an idle teardown, up to
+fifteen minutes. Use `deserialize` for round-trip fidelity (tests, fixtures) and
+`deserializeForDisplay` for anything the user sees.
 
 ## Common Pitfalls
 
@@ -105,12 +149,29 @@ Widget state flows: `SonosRepository` → `WidgetStateMapper` → `WidgetStateSt
 3. **Zone group XML:** The `<ZoneGroupMember>` regex must handle both self-closing (`/>`) and non-self-closing (`>...</ZoneGroupMember>`) tags for surround sound setups.
 4. **Album art URLs:** Double-encoded XML entities in DIDL-Lite (`&amp;amp;` after SOAP + DIDL decoding). The `decodeXmlEntities()` in `extractDidlValue()` handles this.
 5. **Widget size thresholds:** Must match real Android dp dimensions, not desired pixel sizes. Use the formula `(cells × 73) - 16`.
-6. **Immersive theme invariants:** The widget background is always dark (blurred art under a scrim, or a dark gradient fallback), so all foreground styling must use `WidgetTheme` white-alpha tokens — never raw palette colors, which carry no contrast guarantee. The palette accent (`WidgetTheme.accent()`) is reserved for active states (shuffle/repeat on, grouped chips). `WidgetBackgroundRenderer.renderAndCache` is keyed by art URL and called from `SonosRepository` next to palette extraction; clear it wherever `AlbumArtLoader` caches are cleared.
+6. **Publishing widget state:** Never assign `_widgetState.value` or call
+   `WidgetStateStore.pushState` directly. Both belong to `WidgetStatePublisher`;
+   routing around it is how `pollCloud` ended up able to overwrite newer user
+   intent and erase in-flight requests. Publish a poll result with
+   `pushPollState(state, snapshot)` taken *before* the network call, an
+   optimistic command with a claimed ownership, and enrichment with the narrowest
+   field set that carries it.
+7. **Testing anything stateful:** `SonosRepository` cannot be constructed in a
+   JVM unit test — it needs a `Context`, `android.util.Log` and Hilt. Put the
+   logic behind a plain seam (`WidgetStatePublisher`, `WidgetStateRevisionPolicy`,
+   `WidgetLayoutPolicy`, `WidgetStateMapper`) and test that. There is no
+   Robolectric or instrumentation suite in this project.
+8. **Immersive theme invariants:** The widget background is always dark (blurred art under a scrim, or a dark gradient fallback), so all foreground styling must use `WidgetTheme` white-alpha tokens — never raw palette colors, which carry no contrast guarantee. The palette accent (`WidgetTheme.accent()`) is reserved for active states (shuffle/repeat on, grouped chips). `WidgetBackgroundRenderer.renderAndCache` is keyed by art URL and called from `SonosRepository` next to palette extraction; clear it wherever `AlbumArtLoader` caches are cleared.
 
 ## Dependencies (Key)
 
-- Glance 1.2.0-rc01, Hilt 2.58, Retrofit 2.11.0, OkHttp 4.12.0
+- Build: AGP 9.4.0 (built-in Kotlin), Gradle 9.6.0, KSP 2.3.11, Compose compiler 2.3.21
+- Glance 1.2.0-rc01, Hilt 2.60.1, OkHttp 4.12.0
 - Coil 2.7.0, Coroutines 1.9.0, DataStore 1.1.1, WorkManager 2.10.0
+- Tests: JUnit 4.13.2, `org.json`, and `kotlinx-coroutines-core` for the
+  publication-ordering tests
+- There is no Retrofit or kotlinx.serialization here: both the local SOAP
+  transport and the cloud REST client use raw OkHttp with `org.json`
 - Full list in `gradle/libs.versions.toml`
 
 ## OAuth Setup

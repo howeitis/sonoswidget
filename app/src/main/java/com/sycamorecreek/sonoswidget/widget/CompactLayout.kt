@@ -152,7 +152,7 @@ fun CompactLayout(
                         GlassIconButton(
                             resId = R.drawable.ic_skip_previous,
                             contentDescription = "Previous track",
-                            action = actionRunCallback<PreviousTrackAction>(),
+                            action = actionRunCallback<PreviousTrackAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
                             enabled = !controlsDisabled && state.capabilities.canPrevious,
                             boxSize = 40.dp,
                             iconSize = 22.dp
@@ -163,7 +163,7 @@ fun CompactLayout(
                         PlayPauseButton(
                             isPlaying = state.playbackState == PlaybackState.PLAYING,
                             enabled = !controlsDisabled && state.capabilities.canPlayPause,
-                            action = actionRunCallback<PlayPauseAction>(),
+                            action = actionRunCallback<PlayPauseAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
                             size = 40.dp,
                             iconSize = 20.dp
                         )
@@ -173,7 +173,7 @@ fun CompactLayout(
                         GlassIconButton(
                             resId = R.drawable.ic_skip_next,
                             contentDescription = "Next track",
-                            action = actionRunCallback<NextTrackAction>(),
+                            action = actionRunCallback<NextTrackAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
                             enabled = !controlsDisabled && state.capabilities.canNext,
                             boxSize = 40.dp,
                             iconSize = 22.dp

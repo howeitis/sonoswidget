@@ -42,16 +42,20 @@ Observed locally on 2026-09-06:
 |---|---|
 | B1 build stack / daemon criteria | Complete (`73e92b5`), see the record below |
 | B2 lint and CI gates | Complete, 0 errors / 88 warnings |
-| R1 pending state and lifecycle | Complete, see the R1 completion record |
-| R2 action and draft targeting | Implemented (`08b30a4`); acceptance tests not yet written |
-| R3 revision ordering and ownership | Complete and CI-validated, see the R3 completion record |
-| R4 transport outcomes | Implemented (`aee37da`); transport-boundary tests are thin |
-| R5 volume intent coalescing | Implemented (`f5f1c8f`); `VolumeIntentPolicyTest` covers convergence, clamping and room scoping as pure policy. What is unproven is the lock scope itself — that a tap arriving during a slow reconcile is not made to wait — which needs the intent bookkeeping behind a seam like `WidgetStatePublisher`'s |
-| U1 expanded minimum size | Bucket raised (`74839ad`); render-based validation still outstanding |
+| R1 pending state and lifecycle | Complete and merged (`a46907c`), see the R1 completion record |
+| R2 action and draft targeting | Complete (`08b30a4`, `67f5d6f`), see the R2 completion record |
+| R3 revision ordering and ownership | Complete and merged (`213762c`), see the R3 completion record |
+| R4 transport outcomes | Complete apart from one item (`aee37da`, `110c8e7`), see the R4 completion record |
+| R5 volume intent coalescing | Complete (`f5f1c8f`, `fa32b2f`), see the R5 completion record |
+| U1 expanded minimum size | Every code item done (`74839ad`); render validation outstanding and impossible in a cloud session, see the U1 record |
 
 `main` was red from `7e600d1` until `707d796`; treat any completion claim made
-between those commits as unverified, because nothing compiled. The next work is
-R2, R4, R5 and U1 acceptance evidence, in that order of cheapness.
+between those commits as unverified, because nothing compiled. PR #4 merged the
+repair together with R1 and R3 as `9ccac6f`, and `main` is green again.
+
+R2, R4 and R5 now have acceptance evidence. What remains is U1's render
+validation, which needs a machine with the Android SDK, plus two named items
+recorded under R2 and R4 below.
 
 Note for whoever picks this up in a cloud session: this environment's egress
 policy blocks Google's Maven and SDK hosts, so no Android build can run there.
@@ -287,6 +291,34 @@ Tests: delayed A-screen tap after B is confirmed sends no command to B; A's
 grouping draft cannot apply to B; switching while topology loads cannot retarget
 the operation; both widget instances display one consistent target and recovery.
 
+**R2 completion record (2026-09-08).** Complete apart from one untested case.
+
+`08b30a4` bound the grouping draft to its originating room via
+`GROUPING_DRAFT_TARGET_KEY` and `isGroupingTargetCurrent`, but the cited defect
+was still live for transport controls: `canDispatch` checked availability and
+capability against the repository's *current* state, never against the room the
+user was looking at. A launcher dispatches from the RemoteViews that was
+touched, which can be seconds old, so a pause aimed at room A could land on
+room B once the shared target moved.
+
+Checking the widget's stored state does not fix this. `WidgetStateStore` writes
+the new room to preferences before the launcher redraws, so by dispatch time
+the stored room already agrees with the repository. The destination has to be
+baked into the action at render time, which `TARGET_ZONE_KEY` now does at
+eighteen sites across the three layouts (`67f5d6f`).
+
+The decision moved into `canDispatchAction`, free of Android and repository
+types, so `WidgetActionTargetTest` exercises the whole rule — capability,
+reachability, operations in flight, and target binding — rather than an
+equality. An action with no rendered room is still dispatched: that covers the
+room selector, whose destination is chosen by the tap itself, and any
+RemoteViews built before the key existed.
+
+Still untested: "both widget instances display one consistent target and
+recovery". `WidgetStateStore.pushState` clears a stale draft when the shared
+target moves, but asserting it needs Glance preferences, which this project has
+no way to drive in a JVM test.
+
 ## R3 — Protect newer intent from enrichment and old rollbacks (P1)
 
 **R3 completion record (2026-09-07).** Complete and validated in CI.
@@ -366,6 +398,30 @@ not rollback/replay; explicit SOAP rejection => definite failure; cancellation
 does not become ordinary failure; slow accepted favorite does not duplicate its
 queue insertion. Test at the transport boundary as well as the repository fake.
 
+**R4 completion record (2026-09-08).** Complete apart from one named item.
+
+`aee37da` introduced structured transport outcomes; its only test covered the
+outcome mapping, a pure function over values the test supplied itself. That
+cannot show the distinction R4 exists for — whether the speaker actually
+received a command before its response went missing.
+
+`SonosSoapClientTest` (`110c8e7`) drives the real client over a real socket via
+MockWebServer, so every outcome comes from how the connection behaved: an
+accepted command and its envelope; HTTP 500 with a UPnP fault as a definite
+rejection; a request the speaker read and never answered returning UNKNOWN,
+asserted together with `takeRequest()` proving it arrived; a dropped connection
+and an unreachable speaker as UNKNOWN rather than rejections; cancellation
+surfacing as `CancellationException` and no transport outcome; and a slow
+accepted command on the SLOW_COMMAND profile not being cut short by the control
+timeout. Running the real client under JVM tests needs `isReturnDefaultValues`,
+since the transport logs through `android.util.Log`.
+
+Still outstanding: cancelling the coroutine does not cancel the underlying
+OkHttp call, which runs to its own timeout and is discarded. R4 asks to "cancel
+the underlying call appropriately". Doing so means moving the transport onto
+OkHttp's async API behind `suspendCancellableCoroutine`, which changes the
+threading of every poll — not a change to make while CI is the only gate.
+
 ## R5 — Keep volume intent responsive under slow reconciliation (P2)
 
 Evidence: `adjustVolume()` holds `volumeIntentMutex` across `setVolume()`, which
@@ -380,6 +436,26 @@ unsent old-target intent rather than applying it to the new room.
 Tests: five +5 taps at 50 request/display 75 before releasing a blocked refresh,
 and ultimately converge to 75; alternating taps/clamps work; destination change
 does not reroute queued volume; older failures preserve newer desired volume.
+
+**R5 completion record (2026-09-08).** Complete.
+
+`f5f1c8f` moved the network drain off the tap path, and
+`VolumeIntentPolicyTest` covered the arithmetic. What it could not cover was
+R5's actual claim: that a tap arriving during a slow reconcile is not made to
+wait. That property lives in the *scope* of a lock, which was unobservable from
+`SonosRepository`, where taps and SOAP calls are entangled with Android.
+
+`VolumeIntentCoordinator` (`fa32b2f`) now owns the bookkeeping — desired value,
+its destination, the last acknowledged value, drain ownership — with every
+method doing bookkeeping only. `VolumeIntentCoordinatorTest` blocks the drain
+deliberately and then taps: five +5 taps from 50 display 75 while the first
+command is still stuck and nothing further has been sent, and releasing it
+produces two commands rather than five. Those tests carry timeouts, so a
+re-widened critical section deadlocks into a failure instead of passing.
+
+`adjustVolume` no longer holds a lock across `applyOptimisticVolume`. That is
+safe because R3's publisher already orders concurrent taps by field ownership;
+the intent lock had been doing that work as a side effect.
 
 ## U1 — Validate connected Expanded at its real minimum size (P1)
 
@@ -400,6 +476,36 @@ queue/favorites, an error, room selector, grouping editor and large fonts. Add
 render-based checks or repeatable device fixtures, not only bucket threshold
 unit tests. Verify actual 48dp action targets: Expanded currently retains 40dp
 volume buttons and 40×32dp seek targets. Preserve defensive undersized handling.
+
+**U1 record (2026-09-08).** Every code item in this package is done; what is
+left is the validation, and it cannot be produced from a cloud session.
+
+The evidence above is now stale in four places, all fixed by `74839ad` and
+checked against source on 2026-09-08:
+
+| Claim above | Source today |
+|---|---|
+| 400×340dp is still offered | `EXPANDED_HEIGHT_DP = 460` |
+| Expanded retains 40dp volume buttons | `VolumeRow` passes `boxSize = 48.dp` to all three |
+| 40×32dp seek targets | `SeekNudgeButton` is `.size(48.dp)` |
+| minimum size below Mini's requirement | `sonos_widget_info.xml` advertises 240×80dp |
+
+What remains is exactly the part this environment cannot do: validating
+populated local playback at the exact minimum width and height, with progress,
+queue/favorites, an error, the room selector, the grouping editor and large
+fonts. That needs a rendered widget. This automation environment has no Android
+SDK and its egress policy blocks Google's hosts, so no emulator or screenshot
+is possible here, and CI runs the same headless gate. Whoever picks this up
+needs a workstation with the SDK.
+
+Two things were deliberately *not* built as a substitute, because both would
+look like progress without delivering it. A height budget recomputed inside
+`WidgetLayoutPolicy` would be a parallel model of the layout's dp values, free
+to drift from the layout exactly as this section's own evidence drifted.
+Making it non-drifting means having `ExpandedLayout` render from named
+constants, which is a broad change to composables that cannot be rendered here
+to confirm they still look right. Neither is worth doing blind; both are
+reasonable once someone can see the result.
 
 ## Final review checklist for the next delivery
 

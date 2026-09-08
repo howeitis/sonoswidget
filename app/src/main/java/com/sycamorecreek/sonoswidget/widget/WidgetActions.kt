@@ -50,17 +50,66 @@ private fun ensureServiceRunning(context: Context) {
     PlaybackService.start(context)
 }
 
-/** A launcher may dispatch an action from an older render; re-check its contract. */
-private fun canDispatch(repo: SonosRepository, supported: Boolean, action: String): Boolean {
-    val state = repo.widgetState.value
-    val unavailable = state.connectionMode == ConnectionMode.DISCONNECTED ||
-        state.isOffline || state.isRateLimited || state.isUpdating ||
-        state.pendingOperations.any {
+/**
+ * The room a tapped render was showing.
+ *
+ * A launcher dispatches from the RemoteViews the user actually touched, which
+ * may be several seconds old. Baking the destination into the action at render
+ * time is the only way to know what the user was aiming at: the widget's stored
+ * state is no help, because it moves to the new room before the launcher draws
+ * it. Absent on actions whose destination is chosen by the tap itself, such as
+ * picking a room from the selector.
+ */
+val TARGET_ZONE_KEY = ActionParameters.Key<String>("target_zone_id")
+
+/**
+ * Whether an action dispatched from an older render may still be executed.
+ *
+ * Kept free of Android and repository types so the whole decision — not just an
+ * equality check — is exercised by unit tests.
+ *
+ * [renderedTargetId] is the room the tapped render was showing; null or blank
+ * means the action is not bound to a room, which is also what a RemoteViews
+ * built before this key existed will report.
+ */
+internal fun canDispatchAction(
+    state: SonosWidgetState,
+    renderedTargetId: String?,
+    supported: Boolean
+): Boolean {
+    if (!supported) return false
+    if (state.connectionMode == ConnectionMode.DISCONNECTED ||
+        state.isOffline || state.isRateLimited || state.isUpdating
+    ) {
+        return false
+    }
+    if (state.pendingOperations.any {
             it.type == WidgetOperationType.SWITCHING_ROOM ||
                 it.type == WidgetOperationType.APPLYING_GROUPING
         }
-    if (unavailable || !supported) {
-        Log.d(TAG, "$action ignored because its current capability is unavailable")
+    ) {
+        return false
+    }
+    // A tap aimed at room A must never land on room B, however long the
+    // launcher took to deliver it.
+    return renderedTargetId.isNullOrBlank() || renderedTargetId == state.activeZone.id
+}
+
+/** A launcher may dispatch an action from an older render; re-check its contract. */
+private fun canDispatch(
+    repo: SonosRepository,
+    supported: Boolean,
+    action: String,
+    parameters: ActionParameters
+): Boolean {
+    val state = repo.widgetState.value
+    val renderedTargetId = parameters[TARGET_ZONE_KEY]
+    if (!canDispatchAction(state, renderedTargetId, supported)) {
+        Log.d(
+            TAG,
+            "$action ignored: unavailable, unsupported, or aimed at " +
+                "${renderedTargetId ?: "no room"} while ${state.activeZone.id} is active"
+        )
         return false
     }
     return true
@@ -88,7 +137,7 @@ class PlayPauseAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPlayPause, "Play/pause")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPlayPause, "Play/pause", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.PLAY_PAUSE)
         } else {
@@ -112,7 +161,7 @@ class NextTrackAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canNext, "Next")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canNext, "Next", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.NEXT)
         } else {
@@ -136,7 +185,7 @@ class PreviousTrackAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPrevious, "Previous")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPrevious, "Previous", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.PREVIOUS)
         } else {
@@ -164,7 +213,7 @@ class ToggleShuffleAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canShuffle, "Shuffle")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canShuffle, "Shuffle", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.TOGGLE_SHUFFLE)
         } else {
@@ -188,7 +237,7 @@ class CycleRepeatAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canRepeat, "Repeat")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canRepeat, "Repeat", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.CYCLE_REPEAT)
         } else {
@@ -216,7 +265,7 @@ class VolumeUpAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playRamp(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canChangeVolume, "Volume up")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canChangeVolume, "Volume up", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.VOLUME_UP)
         } else {
@@ -240,7 +289,7 @@ class VolumeDownAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playRamp(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canChangeVolume, "Volume down")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canChangeVolume, "Volume down", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.VOLUME_DOWN)
         } else {
@@ -265,7 +314,7 @@ class ToggleMuteAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canMute, "Mute")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canMute, "Mute", parameters)) return
         repo.setMute(!repo.widgetState.value.volumeMuted)
     }
 }
@@ -291,7 +340,7 @@ class SeekBackAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canSeek, "Seek back")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canSeek, "Seek back", parameters)) return
         val track = repo.widgetState.value.currentTrack
         if (track.durationMs <= 0L) return
         val target = (track.elapsedMs - SEEK_STEP_MS).coerceAtLeast(0L)
@@ -313,7 +362,7 @@ class SeekForwardAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canSeek, "Seek forward")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canSeek, "Seek forward", parameters)) return
         val track = repo.widgetState.value.currentTrack
         if (track.durationMs <= 0L) return
         val target = (track.elapsedMs + SEEK_STEP_MS).coerceAtMost(track.durationMs)
@@ -360,7 +409,7 @@ class SwitchZoneAction : ActionCallback {
         }
 
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.zones.any { it.id == zoneId }, "Room switch")) return
+        if (!canDispatch(repo, repo.widgetState.value.zones.any { it.id == zoneId }, "Room switch", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.SWITCH_ZONE, zoneId)
         } else {
@@ -399,7 +448,7 @@ class ToggleGroupAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canGroup, "Grouping")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canGroup, "Grouping", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.TOGGLE_GROUP, speakerUuid)
         } else {
@@ -423,7 +472,7 @@ class GroupAllAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canGroup, "Group all")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canGroup, "Group all", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.GROUP_ALL)
         } else {
@@ -466,7 +515,7 @@ class JumpToQueueItemAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playClick(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canViewQueue, "Queue playback")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canViewQueue, "Queue playback", parameters)) return
         if (repo.shouldDebounce()) {
             repo.enqueueAction(ActionDebouncer.ActionType.JUMP_TO_TRACK, trackNr.toString())
         } else {
@@ -502,7 +551,7 @@ class PlayFavoriteAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
-        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPlayFavorites, "Favorite playback")) return
+        if (!canDispatch(repo, repo.widgetState.value.capabilities.canPlayFavorites, "Favorite playback", parameters)) return
         repo.playFavorite(favoriteId)
     }
 }
