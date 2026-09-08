@@ -50,6 +50,12 @@ android {
 
     // Built-in Kotlin supports Kotlin source directories directly.
     sourceSets.getByName("test").kotlin.srcDir("src/test/kotlin")
+
+    testOptions {
+        // The SOAP transport logs through android.util.Log. Returning defaults
+        // instead of throwing lets its real code run under plain JVM tests.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 // The daemon runs Java 21; emitted Kotlin bytecode remains Java 17.
@@ -112,4 +118,7 @@ dependencies {
     // Publication-ordering tests drive real concurrent coroutines; the JVM
     // artifact keeps them off the Android main-dispatcher factory.
     testImplementation(libs.coroutines.core)
+    // Exercises the SOAP transport against a real socket, so a lost response is
+    // distinguished from a rejection by behaviour rather than by assertion.
+    testImplementation(libs.mockwebserver)
 }
