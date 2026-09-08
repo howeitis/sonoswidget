@@ -41,7 +41,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -180,12 +179,8 @@ class SonosRepository private constructor(
     private var optimisticVolumeOwnership: WidgetStateRevisionPolicy.Ownership? = null
     private var optimisticMuteOwnership: WidgetStateRevisionPolicy.Ownership? = null
     /** Short lock for accepting volume intent; it never covers a speaker command or refresh. */
-    private val volumeIntentMutex = Mutex()
     private val volumeIntentScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var desiredVolume: Int? = null
-    private var desiredVolumeTargetId: String? = null
-    private var acknowledgedVolume: Int? = null
-    private var volumeDrainRunning = false
+    private val volumeIntents = VolumeIntentCoordinator()
     /** One shared refresh gate for service, workers, companion, and widget taps. */
     private val refreshMutex = Mutex()
     /** A request received mid-refresh earns one immediate follow-up cycle. */
@@ -1212,46 +1207,35 @@ class SonosRepository private constructor(
      * callbacks that each read the same stale volume, serialized deltas preserve
      * every tap (for example, five +5 taps from 50 converge to 75).
      */
-    suspend fun adjustVolume(delta: Int): Boolean = volumeIntentMutex.withLock {
+    suspend fun adjustVolume(delta: Int): Boolean {
         val targetId = activeZoneId ?: return false
-        val target = nextVolumeIntent(
-            desiredVolume ?: optimisticVolume ?: _widgetState.value.volume,
-            delta
+        // Bookkeeping only; the drain does the SOAP call on its own coroutine,
+        // so a tap arriving mid-reconcile is never made to wait for it.
+        val target = volumeIntents.accumulate(
+            delta = delta,
+            targetId = targetId,
+            displayedVolume = optimisticVolume ?: _widgetState.value.volume,
+            acknowledgedVolume = _widgetState.value.volume
         )
-        if (acknowledgedVolume == null) acknowledgedVolume = _widgetState.value.volume
-        desiredVolume = target
-        desiredVolumeTargetId = targetId
-        // Publish while holding only the intent lock. The network drain runs on a
-        // separate coroutine, so subsequent taps never wait for SOAP or polling.
+        // Two racing taps cannot land out of order: each claims the volume field,
+        // and the older claim's publication is refused once the newer one exists.
         applyOptimisticVolume(target)
-        if (!volumeDrainRunning) {
-            volumeDrainRunning = true
+        if (volumeIntents.claimDrain()) {
             volumeIntentScope.launch { drainVolumeIntents() }
         }
-        true
+        return true
     }
 
     /** Sends only the newest queued absolute volume target for its original room. */
     private suspend fun drainVolumeIntents() {
         while (true) {
-            val next = volumeIntentMutex.withLock {
-                val target = desiredVolume
-                val targetId = desiredVolumeTargetId
-                if (target == null || targetId == null) {
-                    volumeDrainRunning = false
-                    return
-                }
-                desiredVolume = null
-                target to targetId
-            }
+            val next = volumeIntents.takeNext() ?: return
 
-            if (!isVolumeIntentCurrent(next.second, activeZoneId)) continue
-            when (sendVolumeCommand(next.first)) {
-                CommandOutcome.ACKNOWLEDGED -> acknowledgedVolume = next.first
+            if (!isVolumeIntentCurrent(next.targetId, activeZoneId)) continue
+            when (sendVolumeCommand(next.volume)) {
+                CommandOutcome.ACKNOWLEDGED -> volumeIntents.onAcknowledged(next.volume)
                 CommandOutcome.DEFINITE_FAILURE -> {
-                    val restore = volumeIntentMutex.withLock {
-                        if (desiredVolume == null && next.second == activeZoneId) acknowledgedVolume else null
-                    }
+                    val restore = volumeIntents.restoreAfterFailure(next.targetId, activeZoneId)
                     if (restore != null) {
                         optimisticVolume = null
                         revertVolumeOptimism(restore)
@@ -1270,11 +1254,9 @@ class SonosRepository private constructor(
         cloud = { cloudController.setVolume(volume) }
     )
 
-    private suspend fun discardVolumeIntentForRoomChange() = volumeIntentMutex.withLock {
-        desiredVolume = null
-        desiredVolumeTargetId = null
+    private suspend fun discardVolumeIntentForRoomChange() {
+        volumeIntents.discardForRoomChange()
         optimisticVolume = null
-        acknowledgedVolume = null
     }
 
     /** A room switch is a new destination; no optimistic value may cross it. */
