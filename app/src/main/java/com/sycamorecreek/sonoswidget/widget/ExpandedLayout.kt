@@ -112,7 +112,7 @@ fun ExpandedLayout(
                         SeekNudgeButton(
                             label = "-15",
                             desc = "Rewind 15 seconds",
-                            callback = actionRunCallback<SeekBackAction>()
+                            callback = actionRunCallback<SeekBackAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id))
                         )
                         Spacer(modifier = GlanceModifier.width(8.dp))
                         Box(modifier = GlanceModifier.defaultWeight()) {
@@ -127,7 +127,7 @@ fun ExpandedLayout(
                         SeekNudgeButton(
                             label = "+15",
                             desc = "Forward 15 seconds",
-                            callback = actionRunCallback<SeekForwardAction>()
+                            callback = actionRunCallback<SeekForwardAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id))
                         )
                     }
                 }
@@ -187,7 +187,7 @@ fun ExpandedLayout(
                         } else {
                             // A bounded list prevents secondary content from pushing
                             // transport or volume outside the offered widget size.
-                            state.queue.take(3).forEach { item -> QueueItemRow(item) }
+                            state.queue.take(3).forEach { item -> QueueItemRow(item, state.activeZone.id) }
                         }
                     }
                 }
@@ -508,7 +508,7 @@ private fun TransportControlsBar(
         GlassIconButton(
             resId = R.drawable.ic_shuffle,
             contentDescription = shuffleLabel,
-            action = actionRunCallback<ToggleShuffleAction>(),
+            action = actionRunCallback<ToggleShuffleAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
             enabled = !controlsDisabled && state.capabilities.canShuffle,
             boxSize = 44.dp,
             iconSize = 20.dp,
@@ -520,7 +520,7 @@ private fun TransportControlsBar(
         GlassIconButton(
             resId = R.drawable.ic_skip_previous,
             contentDescription = "Previous track",
-            action = actionRunCallback<PreviousTrackAction>(),
+            action = actionRunCallback<PreviousTrackAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
             enabled = !controlsDisabled && state.capabilities.canPrevious,
             boxSize = 48.dp,
             iconSize = 28.dp
@@ -531,7 +531,7 @@ private fun TransportControlsBar(
         PlayPauseButton(
             isPlaying = state.playbackState == PlaybackState.PLAYING,
             enabled = !controlsDisabled && state.capabilities.canPlayPause,
-            action = actionRunCallback<PlayPauseAction>(),
+            action = actionRunCallback<PlayPauseAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
             size = 60.dp,
             iconSize = 30.dp
         )
@@ -541,7 +541,7 @@ private fun TransportControlsBar(
         GlassIconButton(
             resId = R.drawable.ic_skip_next,
             contentDescription = "Next track",
-            action = actionRunCallback<NextTrackAction>(),
+            action = actionRunCallback<NextTrackAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
             enabled = !controlsDisabled && state.capabilities.canNext,
             boxSize = 48.dp,
             iconSize = 28.dp
@@ -553,7 +553,7 @@ private fun TransportControlsBar(
             resId = if (state.repeatMode == RepeatMode.ONE) R.drawable.ic_repeat_one
                 else R.drawable.ic_repeat,
             contentDescription = repeatLabel,
-            action = actionRunCallback<CycleRepeatAction>(),
+            action = actionRunCallback<CycleRepeatAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
             enabled = !controlsDisabled && state.capabilities.canRepeat,
             boxSize = 44.dp,
             iconSize = 20.dp,
@@ -587,7 +587,7 @@ private fun VolumeRow(
             GlassIconButton(
                 resId = R.drawable.ic_volume_down,
                 contentDescription = "Decrease volume",
-                action = actionRunCallback<VolumeDownAction>(),
+                action = actionRunCallback<VolumeDownAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
                 enabled = !controlsDisabled && state.capabilities.canChangeVolume,
                 boxSize = 48.dp,
                 iconSize = 18.dp,
@@ -609,7 +609,7 @@ private fun VolumeRow(
             GlassIconButton(
                 resId = R.drawable.ic_volume_up,
                 contentDescription = "Increase volume",
-                action = actionRunCallback<VolumeUpAction>(),
+                action = actionRunCallback<VolumeUpAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
                 enabled = !controlsDisabled && state.capabilities.canChangeVolume,
                 boxSize = 48.dp,
                 iconSize = 18.dp,
@@ -622,7 +622,7 @@ private fun VolumeRow(
         GlassIconButton(
             resId = if (state.volumeMuted) R.drawable.ic_volume_off else R.drawable.ic_volume_up,
             contentDescription = if (state.volumeMuted) "Unmute" else "Mute",
-            action = actionRunCallback<ToggleMuteAction>(),
+            action = actionRunCallback<ToggleMuteAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
             enabled = !controlsDisabled && state.capabilities.canMute,
             boxSize = 48.dp,
             iconSize = 18.dp,
@@ -716,7 +716,7 @@ private fun SpeakerGroupingSection(
                     val isGrouped = zone.groupId == activeGroupId
                     val isSpeakerOffline = zone.id in state.offlineSpeakerIds
                     items.add {
-                        SpeakerChip(zone, isGrouped, isSpeakerOffline, palette)
+                        SpeakerChip(zone, state.activeZone.id, isGrouped, isSpeakerOffline, palette)
                     }
                 }
 
@@ -725,7 +725,7 @@ private fun SpeakerGroupingSection(
                         GlassChip(
                             text = "Group all",
                             contentDescription = "Group all speakers",
-                            action = actionRunCallback<GroupAllAction>(),
+                            action = actionRunCallback<GroupAllAction>(actionParametersOf(TARGET_ZONE_KEY to state.activeZone.id)),
                             textColor = WidgetTheme.TextTertiary
                         )
                     }
@@ -777,6 +777,7 @@ private fun SpeakerGroupingSection(
 @androidx.compose.runtime.Composable
 private fun SpeakerChip(
     zone: Zone,
+    targetZoneId: String,
     isGrouped: Boolean,
     isSpeakerOffline: Boolean,
     palette: WidgetColorPalette
@@ -790,7 +791,7 @@ private fun SpeakerChip(
         text = zone.displayName.take(14),
         contentDescription = chipLabel,
         action = if (isSpeakerOffline) null else actionRunCallback<ToggleGroupAction>(
-            actionParametersOf(SPEAKER_UUID_KEY to zone.id)
+            actionParametersOf(SPEAKER_UUID_KEY to zone.id, TARGET_ZONE_KEY to targetZoneId)
         ),
         background = if (isGrouped && !isSpeakerOffline) WidgetTheme.accentGlass(palette)
             else WidgetTheme.Glass,
@@ -852,7 +853,7 @@ private fun FavoritesSection(
                                     if (controlsDisabled) mod
                                     else mod.clickable(
                                         actionRunCallback<PlayFavoriteAction>(
-                                            actionParametersOf(FAVORITE_ID_KEY to fav.id)
+                                            actionParametersOf(FAVORITE_ID_KEY to fav.id, TARGET_ZONE_KEY to state.activeZone.id)
                                         )
                                     )
                                 },
@@ -897,7 +898,7 @@ private fun FavoritesSection(
  */
 @GlanceComposable
 @androidx.compose.runtime.Composable
-private fun QueueItemRow(item: QueueItem) {
+private fun QueueItemRow(item: QueueItem, targetZoneId: String) {
     val queueItemLabel = if (item.artist.isNotBlank()) {
         "Play ${item.trackName} by ${item.artist}"
     } else {
@@ -910,7 +911,7 @@ private fun QueueItemRow(item: QueueItem) {
             .semantics { contentDescription = queueItemLabel }
             .clickable(
                 actionRunCallback<JumpToQueueItemAction>(
-                    actionParametersOf(QUEUE_TRACK_NR_KEY to item.position)
+                    actionParametersOf(QUEUE_TRACK_NR_KEY to item.position, TARGET_ZONE_KEY to targetZoneId)
                 )
             ),
         verticalAlignment = Alignment.CenterVertically
