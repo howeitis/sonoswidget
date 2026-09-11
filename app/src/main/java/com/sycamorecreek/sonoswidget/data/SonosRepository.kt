@@ -308,29 +308,39 @@ class SonosRepository private constructor(
             return false
         }
 
-        activeSpeakerIp = saved.ip
-        activeSpeakerPort = saved.port
-        activeZoneId = saved.zoneId
-
-        // Refresh topology and re-point at the group coordinator in case
-        // grouping changed while we were away.
+        // A reachable address proves nothing about identity: every Sonos
+        // speaker answers GetTransportInfo, and DHCP hands a departed
+        // speaker's address to another one. Confirm the saved room is still
+        // in the household before pointing anything at it.
         val zoneGroups = controller.getZoneGroupState(saved.ip, saved.port)
-        if (zoneGroups != null && zoneGroups.isNotEmpty()) {
-            cachedZoneGroups = zoneGroups
-            lastZoneRefreshMs = System.currentTimeMillis()
+        val target = SavedSpeakerTargetPolicy.resolveTarget(saved.zoneId, zoneGroups)
+        if (target == null) {
+            Log.d(
+                TAG,
+                "Step 0: ${saved.ip} answered but ${saved.zoneName} could not be confirmed — " +
+                    "falling through to discovery rather than controlling another room"
+            )
+            return false
+        }
 
-            val coordinator = zoneGroups.firstOrNull { g ->
-                g.members.any { it.uuid == saved.zoneId }
-            }?.members?.find { it.isCoordinator }
-            if (coordinator != null && coordinator.ip != saved.ip) {
-                Log.d(TAG, "Step 0: Redirecting to group coordinator ${coordinator.zoneName} @ ${coordinator.ip}")
-                activeSpeakerIp = coordinator.ip
-                activeSpeakerPort = coordinator.port
-                activeZoneId = coordinator.uuid
-                preferences.saveActiveSpeaker(
-                    coordinator.uuid, coordinator.zoneName, coordinator.ip, coordinator.port
-                )
-            }
+        cachedZoneGroups = zoneGroups
+        lastZoneRefreshMs = System.currentTimeMillis()
+
+        if (target.ip != saved.ip) {
+            val reason =
+                if (SavedSpeakerTargetPolicy.addressStillBelongsToRoom(saved.zoneId, saved.ip, zoneGroups)) {
+                    "grouping changed while we were away"
+                } else {
+                    "the saved address now belongs to another speaker"
+                }
+            Log.d(TAG, "Step 0: Retargeting to ${target.zoneName} @ ${target.ip} — $reason")
+        }
+
+        activeSpeakerIp = target.ip
+        activeSpeakerPort = target.port
+        activeZoneId = target.uuid
+        if (target.ip != saved.ip || target.uuid != saved.zoneId) {
+            preferences.saveActiveSpeaker(target.uuid, target.zoneName, target.ip, target.port)
         }
 
         stoppedSinceMs = 0L
