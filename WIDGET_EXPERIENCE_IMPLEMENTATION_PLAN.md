@@ -36,7 +36,7 @@ Observed locally on 2026-09-06:
 4. **U1:** correct the expanded layout's minimum-size budget and validate it.
 5. Complete the remaining original phase acceptance criteria and publish evidence.
 
-### Package status — 2026-09-07
+### Package status — 2026-09-11
 
 | Package | Status |
 |---|---|
@@ -48,14 +48,47 @@ Observed locally on 2026-09-06:
 | R4 transport outcomes | Complete apart from one item (`aee37da`, `110c8e7`), see the R4 completion record |
 | R5 volume intent coalescing | Complete (`f5f1c8f`, `fa32b2f`), see the R5 completion record |
 | U1 expanded minimum size | Every code item done (`74839ad`); render validation outstanding and impossible in a cloud session, see the U1 record |
+| Phase 6.2 refresh wakes the poll loop | Complete (`0b1af47`), see the Phase 6 record |
+| Phase 5.3 saved-room identity | Complete, see the Phase 5 record |
 
 `main` was red from `7e600d1` until `707d796`; treat any completion claim made
 between those commits as unverified, because nothing compiled. PR #4 merged the
 repair together with R1 and R3 as `9ccac6f`, and `main` is green again.
 
-R2, R4 and R5 now have acceptance evidence. What remains is U1's render
-validation, which needs a machine with the Android SDK, plus two named items
-recorded under R2 and R4 below.
+R2, R4 and R5 now have acceptance evidence, and two phase criteria that could
+be checked from source are closed: Phase 6.2 (a refresh now wakes the sleeping
+poll loop) and Phase 5.3 (the saved-address fast path now confirms the room's
+identity before using it).
+
+### Resume here on a workstation
+
+Everything remaining needs the Android SDK, a device or emulator, or a real
+Sonos household — none of which a cloud session has. In rough order of value:
+
+1. **U1 render validation.** Populated Expanded at its exact minimum size, with
+   progress, queue/favorites, an error, the room selector, the grouping editor
+   and large fonts. Every U1 *code* item is already done; this is the evidence.
+2. **Phase 7's end-to-end matrix**, eight scenarios that need real speakers:
+   coordinator routing, satellite behaviour, grouped volume scope, cloud/TV/radio
+   capabilities, and the rest.
+3. **Rapid volume tapping on a device.** `adjustVolume` no longer holds a lock
+   across `applyOptimisticVolume`; that is sound because R3's publisher orders
+   concurrent taps by field ownership, but it is reasoned rather than observed.
+   Watch this first.
+4. **R4's underlying-call cancellation.** Cancelling the coroutine does not
+   cancel the OkHttp call; it runs to its own timeout and is discarded. The fix
+   is `suspendCancellableCoroutine` around the async API, which changes the
+   threading of every poll — worth doing where the app can actually be run.
+5. **R2's two-widget consistency case**, which needs Glance preferences to
+   assert and so needs instrumentation rather than a JVM test.
+6. **Phase 7 timing targets**: publication within 100ms of callback entry,
+   visible feedback p95 under 300ms, essential reconciliation p95 under a
+   second, over at least 30 representative actions.
+
+Two further things are deliberately not built, with reasons under the U1 record:
+a height budget recomputed in `WidgetLayoutPolicy`, and rendering
+`ExpandedLayout` from named constants. Both are reasonable once someone can see
+the result.
 
 Note for whoever picks this up in a cloud session: this environment's egress
 policy blocks Google's Maven and SDK hosts, so no Android build can run there.
@@ -747,6 +780,36 @@ Files: `data/SonosPreferences.kt`, room selection/discovery in repository, `app/
 
 Acceptance: first-run setup works without understanding SSDP/IPs; existing preference migration tested; stopped selected room never changes in stay mode; opening two widget instances preserves separate panel state while sharing the documented playback target.
 
+**Phase 5 record (2026-09-11) — item 3, saved-room identity.** Complete.
+
+The preferences already stored the room's UUID alongside its address, so the
+identity was persisted. What was missing was *using* it: `trySavedSpeaker()`
+probed the saved address, and on any answer assigned `activeZoneId = saved.zoneId`
+and proceeded.
+
+A reachable address proves nothing about identity. Every Sonos speaker answers
+`GetTransportInfo`, and DHCP hands a departed speaker's address to another one
+— so the fast reconnect path could report success while pointing at a room the
+user never chose, displaying the saved room's name over another room's
+playback. Phase 5 item 1 is explicit that an unavailable room must show
+recovery rather than silently control another.
+
+Zone group state is household-wide, so any reachable speaker can be asked where
+the saved room now lives. `SavedSpeakerTargetPolicy` uses that to resolve the
+speaker to command, and returns nothing when the saved room is absent from the
+household or when topology is unavailable to verify against — in which case the
+fast path is declined and ordinary discovery runs. Identity is now confirmed
+before anything is assigned, so a refusal cannot leave the repository pointing
+at the wrong speaker.
+
+The policy also distinguishes a regrouping from a reassigned address, which is
+only a log line today but is the fact a user-facing recovery message would need.
+
+`SavedSpeakerTargetPolicyTest` covers an ungrouped room resolving to itself, a
+grouped member resolving to its coordinator, a room that moved address, a room
+missing from the household, unavailable topology, and another speaker holding
+the saved address.
+
 ## Phase 6 — Idle recovery and lifecycle measurement
 
 Files: `service/PlaybackService.kt`, `NetworkChangeReceiver.kt`, `WidgetRefreshWorker.kt`, `WifiReconnectWorker.kt`, `widget/SonosWidgetReceiver.kt`.
@@ -759,6 +822,28 @@ Files: `service/PlaybackService.kt`, `NetworkChangeReceiver.kt`, `WidgetRefreshW
 6. If prompt external-change recovery cannot be achieved with supported lifecycle triggers, record the measured limitation and a follow-up proposal for eventing/service policy. Do not silently add permanent high-frequency polling or unsupported background starts.
 
 Acceptance: no duplicate loops; explicit user recovery initiates promptly; no stale command replay after process death; final report documents recovery latency and any remaining idle limitation.
+
+**Phase 6 record (2026-09-11) — item 2, waking a sleeping loop.** Item 2 is
+closed; item 5's measurements still need a device.
+
+Both refresh entry points — the widget's POLL_NOW intent and Wi-Fi returning —
+reset the backoff counter and ran one immediate poll, but neither touched the
+loop, which stayed in `delay(interval)` on its old deadline. Tap refresh during
+the five-minute disconnected backoff and the immediate poll would reconnect and
+find music playing, after which nothing polled again for the rest of those five
+minutes: no progress bar, no external changes, right after the user asked it to
+recover.
+
+`PollWakeSignal` (`0b1af47`) gives the loop a wait a refresh can cut short. Its
+channel is conflated, so a request arriving mid-poll shortens the wait that
+follows rather than being dropped, and two rapid requests do not skip two
+intervals. It composes with the existing coalescing: the extra cycle finds
+`pollMutex` held and becomes the one queued follow-up rather than a duplicate.
+
+Item 1 was audited and needs no change: the process-local `NetworkChangeReceiver`
+is indeed useless to a dead process, which is why `WifiReconnectWorker` exists —
+a WorkManager one-shot with an UNMETERED constraint, armed by every
+`pushDisconnectedState()`, so Wi-Fi reattachment wakes a torn-down process.
 
 ## Phase 7 — Release validation and handoff
 
