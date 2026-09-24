@@ -41,6 +41,8 @@ class SonosPreferences(private val context: Context) {
         private val KEY_ROOM_FOLLOW_MODE = stringPreferencesKey("room_follow_mode")
         private val KEY_ROOM_TARGET_ID = stringPreferencesKey("room_target_id")
         private val KEY_ROOM_TARGET_NAME = stringPreferencesKey("room_target_name")
+        private fun quickPlayIdKey(slot: Int) = stringPreferencesKey("quick_play_${slot}_id")
+        private fun quickPlayTitleKey(slot: Int) = stringPreferencesKey("quick_play_${slot}_title")
 
         private const val EXPERIENCE_PREFERENCES_VERSION = RoomFollowMigrationPolicy.CURRENT_VERSION
         private val LEGACY_KEY_NAMES = setOf(
@@ -300,6 +302,35 @@ class SonosPreferences(private val context: Context) {
             prefs.remove(KEY_PREFERRED_SERVICE)
         }
         Log.d(TAG, "Cleared preferred service")
+    }
+
+    // ──────────────────────────────────────────────
+    // Quick-play favorites (idle widget buttons)
+    // ──────────────────────────────────────────────
+
+    /** One entry per quick-play slot; null means the slot follows Sonos order. */
+    internal suspend fun getQuickPlayPicks(): List<QuickPlayPolicy.Pick?> {
+        val prefs = context.sonosPrefsDataStore.data.first()
+        return (0 until QuickPlayPolicy.SLOT_COUNT).map { slot ->
+            val id = prefs[quickPlayIdKey(slot)]
+            val title = prefs[quickPlayTitleKey(slot)]
+            if (id.isNullOrBlank() || title.isNullOrBlank()) null else QuickPlayPolicy.Pick(id, title)
+        }
+    }
+
+    /** Pins [pick] to [slot], or returns the slot to Sonos order when null. */
+    internal suspend fun saveQuickPlayPick(slot: Int, pick: QuickPlayPolicy.Pick?) {
+        require(slot in 0 until QuickPlayPolicy.SLOT_COUNT) { "No quick-play slot $slot" }
+        context.sonosPrefsDataStore.edit { prefs ->
+            if (pick == null) {
+                prefs.remove(quickPlayIdKey(slot))
+                prefs.remove(quickPlayTitleKey(slot))
+            } else {
+                prefs[quickPlayIdKey(slot)] = pick.id
+                prefs[quickPlayTitleKey(slot)] = pick.title
+            }
+        }
+        Log.d(TAG, "Quick-play slot $slot → ${pick?.title ?: "Sonos order"}")
     }
 
     private fun parseRoomFollowMode(value: String?): RoomFollowMode? =

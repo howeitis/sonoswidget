@@ -532,9 +532,18 @@ class JumpToQueueItemAction : ActionCallback {
 val FAVORITE_ID_KEY = ActionParameters.Key<String>("favorite_id")
 
 /**
+ * The title the tapped button showed. Favorite ids are positional and can be
+ * renumbered by the Sonos app, so the title guards against playing whatever
+ * now sits at a stale id.
+ */
+val FAVORITE_TITLE_KEY = ActionParameters.Key<String>("favorite_title")
+
+/**
  * Starts playback of a Sonos Favorite identified by [FAVORITE_ID_KEY].
  *
  * Not debounced — this starts new content rather than nudging transport state.
+ * Reconnects first when needed: favorites are tapped while idle, which is also
+ * when the process is likely to have been reclaimed.
  */
 class PlayFavoriteAction : ActionCallback {
     override suspend fun onAction(
@@ -551,8 +560,27 @@ class PlayFavoriteAction : ActionCallback {
         ensureServiceRunning(context)
         HapticHelper.playConfirm(context)
         val repo = SonosRepository.getInstance(context)
+        repo.prepareForFavorite()
         if (!canDispatch(repo, repo.widgetState.value.capabilities.canPlayFavorites, "Favorite playback", parameters)) return
-        repo.playFavorite(favoriteId)
+        repo.playFavorite(favoriteId, parameters[FAVORITE_TITLE_KEY])
+    }
+}
+
+/**
+ * Searches every room for one that is playing and switches the widget to it
+ * immediately, instead of waiting for the STOPPED re-scan. Doubles as a
+ * reconnect when the widget is disconnected.
+ */
+class FindPlayingAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters
+    ) {
+        Log.d(TAG, "FindPlayingAction triggered")
+        ensureServiceRunning(context)
+        HapticHelper.playConfirm(context)
+        SonosRepository.getInstance(context).findPlayingNow()
     }
 }
 

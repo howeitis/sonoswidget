@@ -19,6 +19,7 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
+import com.sycamorecreek.sonoswidget.R
 
 /**
  * Mini (~240x80dp) immersive widget layout for the lock screen and
@@ -102,6 +103,20 @@ fun MiniLayout(
             }
 
             Spacer(modifier = GlanceModifier.width(8.dp))
+
+            // Too small for quick-play chips; keep only the scan.
+            if (IdleActionsPolicy.showFindPlaying(state)) {
+                GlassIconButton(
+                    resId = R.drawable.ic_search,
+                    contentDescription = "Search every room for something playing",
+                    action = actionRunCallback<FindPlayingAction>(),
+                    boxSize = 36.dp,
+                    iconSize = 18.dp,
+                    tint = WidgetTheme.TextSecondary,
+                    glass = true
+                )
+                Spacer(modifier = GlanceModifier.width(6.dp))
+            }
 
             PlayPauseButton(
                 isPlaying = state.playbackState == PlaybackState.PLAYING,

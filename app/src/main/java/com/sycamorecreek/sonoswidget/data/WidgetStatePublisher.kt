@@ -118,6 +118,7 @@ internal class WidgetStatePublisher(
             merged = merged.copy(
                 queue = incoming.queue,
                 favorites = incoming.favorites,
+                quickPlay = incoming.quickPlay,
                 capabilities = incoming.capabilities
             )
         }

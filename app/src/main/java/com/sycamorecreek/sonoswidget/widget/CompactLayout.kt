@@ -207,6 +207,12 @@ fun CompactLayout(
                     }
                 }
             }
+
+            // ── Idle shortcuts: find playing + quick-play favorites ──
+            if (IdleActionsPolicy.isIdle(state)) {
+                Spacer(modifier = GlanceModifier.height(8.dp))
+                IdleActionsRow(state)
+            }
             }
 
             // ── Permission hint (one-time, shown when local network denied) ──
