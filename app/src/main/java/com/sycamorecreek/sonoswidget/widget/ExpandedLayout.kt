@@ -103,6 +103,12 @@ fun ExpandedLayout(
             Column(modifier = GlanceModifier.fillMaxWidth()) {
                 NowPlayingHero(state, albumArt, controlsDisabled, hasTrack)
 
+                // Idle shortcuts replace the progress row, which needs a track.
+                if (IdleActionsPolicy.isIdle(state)) {
+                    Spacer(modifier = GlanceModifier.height(12.dp))
+                    IdleActionsRow(state, fontSize = 11)
+                }
+
                 if (hasTrack && !controlsDisabled && state.capabilities.canSeek && state.currentTrack.durationMs > 0L) {
                     Spacer(modifier = GlanceModifier.height(12.dp))
                     Row(

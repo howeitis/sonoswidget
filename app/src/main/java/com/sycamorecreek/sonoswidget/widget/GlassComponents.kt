@@ -11,7 +11,9 @@ import androidx.glance.GlanceModifier
 import androidx.glance.Image
 import androidx.glance.ImageProvider
 import androidx.glance.action.Action
+import androidx.glance.action.actionParametersOf
 import androidx.glance.action.clickable
+import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.background
 import androidx.glance.layout.Alignment
@@ -186,6 +188,59 @@ fun GlassChip(
                     fontWeight = if (bold) FontWeight.Bold else FontWeight.Medium
                 ),
                 maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * Idle shortcuts shown while nothing is playing: "Find playing" forces an
+ * immediate scan of every room, and each quick-play chip starts a pinned Sonos
+ * Favorite in the current room. Renders nothing when [IdleActionsPolicy] says
+ * the widget is not idle, so callers can place it unconditionally.
+ */
+@GlanceComposable
+@androidx.compose.runtime.Composable
+fun IdleActionsRow(state: SonosWidgetState, fontSize: Int = 10) {
+    val showFind = IdleActionsPolicy.showFindPlaying(state)
+    val quickPlay = IdleActionsPolicy.quickPlay(state)
+    if (!showFind && quickPlay.isEmpty()) return
+
+    Row(
+        modifier = GlanceModifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (showFind) {
+            GlassChip(
+                text = "Find playing",
+                contentDescription = "Search every room for something playing",
+                action = actionRunCallback<FindPlayingAction>(),
+                leadingIcon = R.drawable.ic_search,
+                textColor = WidgetTheme.TextSecondary,
+                fontSize = fontSize,
+                horizontalPadding = 9.dp,
+                verticalPadding = 6.dp
+            )
+        }
+        quickPlay.forEachIndexed { index, favorite ->
+            if (showFind || index > 0) Spacer(modifier = GlanceModifier.width(6.dp))
+            GlassChip(
+                text = favorite.title,
+                contentDescription = "Play ${favorite.title}",
+                action = actionRunCallback<PlayFavoriteAction>(
+                    actionParametersOf(
+                        FAVORITE_ID_KEY to favorite.id,
+                        FAVORITE_TITLE_KEY to favorite.title,
+                        TARGET_ZONE_KEY to state.activeZone.id
+                    )
+                ),
+                modifier = GlanceModifier.defaultWeight(),
+                background = WidgetTheme.GlassStrong,
+                textColor = WidgetTheme.TextPrimary,
+                leadingIcon = R.drawable.ic_play_arrow,
+                fontSize = fontSize,
+                horizontalPadding = 9.dp,
+                verticalPadding = 6.dp
             )
         }
     }

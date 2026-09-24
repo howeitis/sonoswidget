@@ -205,6 +205,13 @@ class SonosRepository private constructor(
 
     // Smart speaker re-evaluation: tracks how long the current speaker has been STOPPED
     private var stoppedSinceMs: Long = 0L
+    /**
+     * Set by [findPlayingNow]; the next local poll scans every room right away
+     * instead of waiting out [STOPPED_RESCAN_THRESHOLD_MS]. A flag rather than a
+     * direct scan so the scan runs inside the shared refresh gate, and a tap that
+     * lands mid-poll is served by the queued follow-up cycle.
+     */
+    private val findPlayingRequested = AtomicBoolean(false)
 
     // ──────────────────────────────────────────────
     // Action debouncer (Task 3.4)
@@ -555,9 +562,12 @@ class SonosRepository private constructor(
             }
         }
 
+        // Consumed here, not in pollLocal, so a request made while on cloud
+        // cannot linger and fire an unexpected room switch much later.
+        val findPlaying = findPlayingRequested.getAndSet(false)
         val result = when (activeConnectionMode) {
             ConnectionMode.CLOUD -> pollCloud()
-            else -> pollLocal()
+            else -> pollLocal(findPlaying)
         }
 
         // Drain debounced actions on reconnection (Task 3.4)
@@ -572,7 +582,7 @@ class SonosRepository private constructor(
         return result
     }
 
-    private suspend fun pollLocal(): SonosWidgetState? {
+    private suspend fun pollLocal(findPlaying: Boolean = false): SonosWidgetState? {
         val ip = activeSpeakerIp ?: return null
         val port = activeSpeakerPort
         val targetGeneration = roomTargetGeneration
@@ -592,6 +602,15 @@ class SonosRepository private constructor(
         // If the current coordinator is STOPPED for 30+ seconds, scan all
         // coordinators for one that is PLAYING and switch to it automatically.
         val transportState = transportInfo?.state
+        if (findPlaying && transportState != "PLAYING" && transportState != "TRANSITIONING") {
+            val playing = findPlayingCoordinator(ip, port)
+            if (playing != null) {
+                Log.d(TAG, "Find playing: switching to ${playing.zoneName} @ ${playing.ip}")
+                adoptCoordinator(playing)
+                return pollLocal()
+            }
+            Log.d(TAG, "Find playing: no other room is playing — staying on ${activeZoneId}")
+        }
         if (transportState == "STOPPED" || transportState == "NO_MEDIA_PRESENT") {
             val now2 = System.currentTimeMillis()
             if (stoppedSinceMs == 0L) {
@@ -611,10 +630,7 @@ class SonosRepository private constructor(
                     val better = findBestCoordinator(freshGroups)
                     if (better != null && better.uuid != activeZoneId) {
                         Log.d(TAG, "Switching to playing coordinator: ${better.zoneName} @ ${better.ip}")
-                        activeSpeakerIp = better.ip
-                        activeSpeakerPort = better.port
-                        activeZoneId = better.uuid
-                        preferences.saveActiveSpeaker(better.uuid, better.zoneName, better.ip, better.port)
+                        adoptCoordinator(better)
                         return pollLocal() // Re-poll with the new speaker
                     }
                 }
@@ -681,6 +697,7 @@ class SonosRepository private constructor(
         val favorites = cachedFavorites?.map {
             Favorite(id = it.id, title = it.title, artUrl = it.albumArtUri)
         } ?: emptyList()
+        val quickPlayPicks = preferences.getQuickPlayPicks()
 
         val queueItems = mapQueueItems(cachedQueue, currentTrackNum)
 
@@ -701,6 +718,7 @@ class SonosRepository private constructor(
         ).copy(
             queue = queueItems,
             favorites = favorites,
+            quickPlay = QuickPlayPolicy.resolve(favorites, quickPlayPicks),
             currentSource = currentSource,
             volumeMuted = cachedMuted,
             isUpdating = isFirmwareUpdating,
@@ -762,6 +780,7 @@ class SonosRepository private constructor(
         state = currentForEnrichment.copy(
             queue = enrichedQueue,
             favorites = enrichedFavorites,
+            quickPlay = QuickPlayPolicy.resolve(enrichedFavorites, quickPlayPicks),
             capabilities = WidgetStateMapper.capabilitiesFor(
                 connectionMode = activeConnectionMode,
                 track = currentForEnrichment.currentTrack,
@@ -1390,6 +1409,7 @@ class SonosRepository private constructor(
             currentSource = "",
             queue = emptyList(),
             favorites = emptyList(),
+            quickPlay = emptyList(),
             artworkVersion = null,
             pendingOperations = listOf(operation),
             isContentStale = true,
@@ -1460,9 +1480,18 @@ class SonosRepository private constructor(
      * Starts playback of a cached Sonos Favorite by its DIDL id. Routed through
      * the active coordinator. Favorites are local-only (no cloud equivalent).
      */
-    suspend fun playFavorite(favoriteId: String): Boolean {
+    suspend fun playFavorite(favoriteId: String, favoriteTitle: String? = null): Boolean {
         if (!canExecute(_widgetState.value.capabilities.canPlayFavorites, "play favorite")) return false
-        val fav = cachedFavorites?.find { it.id == favoriteId }
+        // A rendered id can be stale once favorites are renumbered in the Sonos
+        // app; the title the button showed is what the user actually tapped.
+        val fav = cachedFavorites?.let { cached ->
+            if (favoriteTitle.isNullOrBlank()) {
+                cached.find { it.id == favoriteId }
+            } else {
+                cached.find { it.id == favoriteId && it.title == favoriteTitle }
+                    ?: cached.find { it.title.equals(favoriteTitle, ignoreCase = true) }
+            }
+        }
         if (fav == null) {
             Log.w(TAG, "Favorite '$favoriteId' not found in cache")
             return false
@@ -1495,6 +1524,46 @@ class SonosRepository private constructor(
             ))
         }
         return ok
+    }
+
+    /**
+     * Brings the repository to a state where a favorite can be played: connected
+     * and holding the favorites list. Idle is exactly when a quick-play button is
+     * tapped, and also when the process is most likely to have been reclaimed —
+     * leaving an empty favorites cache and a disconnected in-memory state that
+     * would otherwise make the tap a silent no-op.
+     */
+    suspend fun prepareForFavorite() {
+        if (isConnected && cachedFavorites != null &&
+            _widgetState.value.connectionMode != ConnectionMode.DISCONNECTED
+        ) {
+            return
+        }
+        pollAndUpdate()
+        // A request that lands mid-refresh is coalesced and returns at once; wait
+        // for the in-flight cycle (and its queued follow-up) to finish.
+        refreshMutex.lock()
+        refreshMutex.unlock()
+    }
+
+    /**
+     * Scans every room for one that is playing and switches to it now, rather
+     * than after the 30-second STOPPED re-scan (which also only runs in
+     * follow-playing mode). An explicit tap is the user's own intent, so it
+     * applies in either room-follow mode. When disconnected this is also a
+     * reconnect: discovery already prefers a playing coordinator.
+     */
+    suspend fun findPlayingNow(): SonosWidgetState? {
+        findPlayingRequested.set(true)
+        return pollAndUpdate()
+    }
+
+    /** Re-resolves quick-play buttons after the user changes them in the companion. */
+    suspend fun refreshQuickPlay() {
+        val current = _widgetState.value
+        val quickPlay = QuickPlayPolicy.resolve(current.favorites, preferences.getQuickPlayPicks())
+        if (quickPlay == current.quickPlay) return
+        pushState(current.copy(quickPlay = quickPlay), setOf(WidgetStateRevisionPolicy.Field.ENRICHMENT))
     }
 
     // ──────────────────────────────────────────────
@@ -2017,6 +2086,51 @@ class SonosRepository private constructor(
         }
         Log.d(TAG, "Preferred zone '$preferredName' → coordinator ${coordinator.zoneName} @ ${coordinator.ip}")
         return coordinator
+    }
+
+    /**
+     * Moves the poll target to [coordinator] outside an explicit room switch.
+     * Room-scoped caches and optimism belong to the old room; favorites are
+     * household-wide and stay.
+     */
+    private suspend fun adoptCoordinator(coordinator: ZoneGroupMember) {
+        discardVolumeIntentForRoomChange()
+        discardRoomScopedOptimism()
+        ++roomTargetGeneration
+        activeSpeakerIp = coordinator.ip
+        activeSpeakerPort = coordinator.port
+        activeZoneId = coordinator.uuid
+        cachedQueue = null
+        cachedTransportSettings = null
+        cachedSource = ""
+        lastQueueTrackNum = -1
+        lastMediaInfoMs = 0L
+        stoppedSinceMs = 0L
+        preferences.saveActiveSpeaker(coordinator.uuid, coordinator.zoneName, coordinator.ip, coordinator.port)
+    }
+
+    /**
+     * Probes every group coordinator, the active one included (a lone room has
+     * nothing to compare against, but may itself have just started), and returns
+     * a different coordinator that is playing, per [PlayingRoomPolicy].
+     */
+    private suspend fun findPlayingCoordinator(ip: String, port: Int): ZoneGroupMember? {
+        val groups = controller.getZoneGroupState(ip, port)
+        if (groups.isNullOrEmpty()) return null
+        cachedZoneGroups = groups
+        lastZoneRefreshMs = System.currentTimeMillis()
+        val coordinators = groups.mapNotNull { group -> group.members.find { it.isCoordinator } }
+        val probes = coroutineScope {
+            coordinators.map { coordinator ->
+                async(Dispatchers.IO) {
+                    val state = controller.getTransportInfo(coordinator.ip, coordinator.port)?.state
+                    Log.d(TAG, "  ${coordinator.zoneName} @ ${coordinator.ip}: ${state ?: "unreachable"}")
+                    PlayingRoomPolicy.Probe(coordinator.uuid, state)
+                }
+            }.awaitAll()
+        }
+        val pickedId = PlayingRoomPolicy.pick(probes, activeZoneId) ?: return null
+        return coordinators.find { it.uuid == pickedId }
     }
 
     private suspend fun findBestCoordinator(

@@ -45,6 +45,9 @@ app/             Entry point (Application, CompanionActivity)
 | `WidgetStatePublisher.kt` | The only path that publishes visible state. Serializes writes, merges narrow field patches, enforces revision and ownership rules. |
 | `WidgetStateRevisionPolicy.kt` | Per-field revision ledger backing the publisher: snapshots, ownership claims, staleness checks. |
 | `WidgetLayoutPolicy.kt` | Size-bucket thresholds and `bucketFor()`, shared by the widget and its tests. |
+| `IdleActionsPolicy.kt` | When the idle shortcuts ("Find playing", quick-play favorites) show, shared by all three layouts. |
+| `QuickPlayPolicy.kt` | Resolves the user's two pinned quick-play Sonos Favorites (id + title, never id alone). |
+| `PlayingRoomPolicy.kt` | Which room an explicit "Find playing" scan may switch to — only a PLAYING/TRANSITIONING one. |
 | `SonosControlActions.kt` | SOAP action builders and XML parsers (transport, volume, queue, zone groups). |
 | `SonosSoapClient.kt` | Low-level HTTP POST of SOAP envelopes to speakers on port 1400. |
 | `PlaybackService.kt` | Foreground service driving the poll loop with adaptive intervals. |

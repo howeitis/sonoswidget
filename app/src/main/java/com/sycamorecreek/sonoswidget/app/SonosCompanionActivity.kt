@@ -81,6 +81,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.sycamorecreek.sonoswidget.R
+import com.sycamorecreek.sonoswidget.data.QuickPlayPolicy
 import com.sycamorecreek.sonoswidget.data.SonosPreferences
 import com.sycamorecreek.sonoswidget.data.SonosRepository
 import com.sycamorecreek.sonoswidget.service.AlbumArtLoader
@@ -90,6 +91,7 @@ import com.sycamorecreek.sonoswidget.sonos.cloud.SonosOAuthManager
 import com.sycamorecreek.sonoswidget.sonos.cloud.TokenStore
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
+import com.sycamorecreek.sonoswidget.widget.Favorite
 import com.sycamorecreek.sonoswidget.widget.SonosWidgetState
 import com.sycamorecreek.sonoswidget.widget.Zone
 import kotlinx.coroutines.CoroutineScope
@@ -144,6 +146,9 @@ class SonosCompanionActivity : ComponentActivity() {
     private var defaultZoneId by mutableStateOf<String?>(null)
     private var roomFollowMode by mutableStateOf(SonosPreferences.RoomFollowMode.STAY_WITH_ROOM)
     private var preferredService by mutableStateOf<String?>(null)
+    private val quickPlayPicks = mutableStateListOf<QuickPlayPolicy.Pick?>().apply {
+        repeat(QuickPlayPolicy.SLOT_COUNT) { add(null) }
+    }
     private var cacheSizeBytes by mutableLongStateOf(0L)
 
     // Connection prerequisites
@@ -237,6 +242,8 @@ class SonosCompanionActivity : ComponentActivity() {
                             onClearDefaultZone = ::clearDefaultZone,
                             preferredService = preferredService,
                             onSelectService = ::selectPreferredService,
+                            quickPlayPicks = quickPlayPicks,
+                            onSelectQuickPlay = ::selectQuickPlay,
                             cacheSizeBytes = cacheSizeBytes,
                             onClearCache = ::clearImageCache,
                             onRefreshWidget = ::refreshWidget,
@@ -383,6 +390,9 @@ class SonosCompanionActivity : ComponentActivity() {
             roomFollowMode = roomPreferences.mode
 
             preferredService = withContext(Dispatchers.IO) { preferences.getPreferredService() }
+
+            val picks = withContext(Dispatchers.IO) { preferences.getQuickPlayPicks() }
+            picks.forEachIndexed { slot, pick -> quickPlayPicks[slot] = pick }
 
             cacheSizeBytes = withContext(Dispatchers.IO) {
                 AlbumArtLoader.getDiskCacheSize(applicationContext)
@@ -576,6 +586,19 @@ class SonosCompanionActivity : ComponentActivity() {
     }
 
     // ──────────────────────────────────────────────
+    // Quick play
+    // ──────────────────────────────────────────────
+
+    private fun selectQuickPlay(slot: Int, favorite: Favorite?) {
+        val pick = favorite?.let { QuickPlayPolicy.Pick(it.id, it.title) }
+        quickPlayPicks[slot] = pick
+        scope.launch(Dispatchers.IO) {
+            preferences.saveQuickPlayPick(slot, pick)
+            SonosRepository.getInstance(applicationContext).refreshQuickPlay()
+        }
+    }
+
+    // ──────────────────────────────────────────────
     // Cache management
     // ──────────────────────────────────────────────
 
@@ -696,6 +719,8 @@ private fun CompanionScreen(
     onClearDefaultZone: () -> Unit,
     preferredService: String?,
     onSelectService: (String) -> Unit,
+    quickPlayPicks: List<QuickPlayPolicy.Pick?>,
+    onSelectQuickPlay: (Int, Favorite?) -> Unit,
     cacheSizeBytes: Long,
     onClearCache: () -> Unit,
     onRefreshWidget: () -> Unit,
@@ -891,6 +916,39 @@ private fun CompanionScreen(
                         text = "Default room: $defaultZoneName",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // ── Quick play ──
+        SectionCard(title = "Quick Play") {
+            Text(
+                text = "Two buttons the widget shows while nothing is playing. They play " +
+                    "Sonos Favorites, so anything you add to My Sonos in the Sonos app — " +
+                    "a YouTube Music playlist, a Pocket Casts filter — can be one.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            if (state.favorites.isEmpty()) {
+                Text(
+                    text = "No Sonos Favorites found yet. Add some in the Sonos app, then refresh.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                val autoFill = QuickPlayPolicy.resolve(state.favorites, List(QuickPlayPolicy.SLOT_COUNT) { null })
+                quickPlayPicks.forEachIndexed { slot, pick ->
+                    if (slot > 0) Spacer(modifier = Modifier.height(8.dp))
+                    QuickPlayPicker(
+                        label = "Button ${slot + 1}",
+                        favorites = state.favorites,
+                        pick = pick,
+                        autoTitle = autoFill.getOrNull(slot)?.title,
+                        onSelect = { onSelectQuickPlay(slot, it) }
                     )
                 }
             }
@@ -1500,6 +1558,66 @@ private fun ManualIpRow(
                 tint = MaterialTheme.colorScheme.error,
                 modifier = Modifier.size(20.dp)
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun QuickPlayPicker(
+    label: String,
+    favorites: List<Favorite>,
+    pick: QuickPlayPolicy.Pick?,
+    autoTitle: String?,
+    onSelect: (Favorite?) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val missing = pick != null && QuickPlayPolicy.match(favorites, pick) == null
+    val value = when {
+        pick != null -> pick.title
+        autoTitle != null -> "Automatic ($autoTitle)"
+        else -> "Automatic"
+    }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it }
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            isError = missing,
+            supportingText = if (missing) {
+                { Text("No longer in your Sonos Favorites — this button is hidden") }
+            } else null,
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth()
+        )
+
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("Automatic (Sonos Favorites order)") },
+                onClick = {
+                    onSelect(null)
+                    expanded = false
+                }
+            )
+            favorites.forEach { favorite ->
+                DropdownMenuItem(
+                    text = { Text(favorite.title) },
+                    onClick = {
+                        onSelect(favorite)
+                        expanded = false
+                    }
+                )
+            }
         }
     }
 }

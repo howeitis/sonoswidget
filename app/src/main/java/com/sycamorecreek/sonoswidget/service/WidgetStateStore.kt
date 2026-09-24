@@ -127,6 +127,9 @@ object WidgetStateStore {
             put("favorites", JSONArray().apply {
                 state.favorites.forEach { put(serializeFavorite(it)) }
             })
+            put("quickPlay", JSONArray().apply {
+                state.quickPlay.forEach { put(serializeFavorite(it)) }
+            })
             put("currentSource", state.currentSource)
             put("connectionMode", state.connectionMode.name)
             put("shuffleEnabled", state.shuffleEnabled)
@@ -172,6 +175,7 @@ object WidgetStateStore {
                 zones = deserializeZoneList(obj.optJSONArray("zones")),
                 queue = deserializeQueueList(obj.optJSONArray("queue")),
                 favorites = deserializeFavoriteList(obj.optJSONArray("favorites")),
+                quickPlay = deserializeFavoriteList(obj.optJSONArray("quickPlay")),
                 currentSource = obj.optString("currentSource", ""),
                 connectionMode = try {
                     ConnectionMode.valueOf(obj.optString("connectionMode", "DISCONNECTED"))

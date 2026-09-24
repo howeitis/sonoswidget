@@ -107,6 +107,8 @@ data class SonosWidgetState(
     val zones: List<Zone> = emptyList(),
     val queue: List<QueueItem> = emptyList(),
     val favorites: List<Favorite> = emptyList(),
+    /** Favorites offered as one-tap buttons while idle, resolved by [com.sycamorecreek.sonoswidget.data.QuickPlayPolicy]. */
+    val quickPlay: List<Favorite> = emptyList(),
     val currentSource: String = "",
     val connectionMode: ConnectionMode = ConnectionMode.DISCONNECTED,
     val volumeMuted: Boolean = false,

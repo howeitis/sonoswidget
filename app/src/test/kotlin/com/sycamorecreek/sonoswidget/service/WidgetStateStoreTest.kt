@@ -1,6 +1,7 @@
 package com.sycamorecreek.sonoswidget.service
 
 import com.sycamorecreek.sonoswidget.widget.ConnectionMode
+import com.sycamorecreek.sonoswidget.widget.Favorite
 import com.sycamorecreek.sonoswidget.widget.PendingWidgetOperation
 import com.sycamorecreek.sonoswidget.widget.PlaybackState
 import com.sycamorecreek.sonoswidget.widget.RepeatMode
@@ -15,6 +16,17 @@ import org.json.JSONObject
 import org.junit.Test
 
 class WidgetStateStoreTest {
+
+    @Test
+    fun `quick-play favorites survive a round trip and default to none`() {
+        val quick = listOf(Favorite("FV:2/2", "Your Likes", "http://art"), Favorite("FV:2/3", "New Releases"))
+        val restored = WidgetStateStore.deserialize(
+            WidgetStateStore.serialize(SonosWidgetState(favorites = quick, quickPlay = quick))
+        )
+
+        assertEquals(quick, restored.quickPlay)
+        assertTrue(WidgetStateStore.deserialize("""{"volume":10}""").quickPlay.isEmpty())
+    }
 
     @Test
     fun `legacy JSON with missing experience fields receives safe defaults`() {
