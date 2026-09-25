@@ -1,6 +1,7 @@
 package com.sycamorecreek.sonoswidget.sonos.local
 
 import android.util.Log
+import kotlinx.coroutines.delay
 
 /** Outcome for a user command once the SOAP transport has been interpreted. */
 enum class CommandTransportOutcome {
@@ -39,6 +40,8 @@ class SonosControlActions(
     companion object {
         private const val TAG = "SonosControlActions"
         private const val INSTANCE_ID = "0"
+        private const val FAVORITE_CONFIRM_ATTEMPTS = 3
+        private const val FAVORITE_CONFIRM_INTERVAL_MS = 1_000L
     }
 
     // ──────────────────────────────────────────────
@@ -588,25 +591,49 @@ class SonosControlActions(
         )
 
         // Prefer the strategy that matches the detected type, but fall back to the
-        // other if it fails — favorite content types are hard to detect perfectly
-        // (cpcontainer vs. direct stream vs. service quirks), so we try both rather
-        // than report failure on a single mis-detection.
+        // other if it is rejected — favorite content types are hard to detect
+        // perfectly (cpcontainer vs. direct stream vs. service quirks), so we try
+        // both rather than report failure on a single mis-detection.
         val preferQueue = isContainer && canQueue
-        val primaryOk = if (preferQueue) {
+        val primary = if (preferQueue) {
             playContainerFromQueue(ip, port, uri, metadata, coordinatorUuid!!)
         } else {
             playSingleUri(ip, port, uri, metadata)
         }
-        if (primaryOk) return true
+        when (primary) {
+            CommandTransportOutcome.ACKNOWLEDGED -> return true
+            // A lost response can follow a speaker that already acted. Falling back
+            // would clear the queue it just started, so ask it instead.
+            CommandTransportOutcome.UNKNOWN -> return confirmPlaying(ip, port)
+            CommandTransportOutcome.REJECTED -> Unit
+        }
 
-        Log.w(TAG, "Favorite primary path (queue=$preferQueue) failed — trying fallback")
-        return if (preferQueue) {
-            playSingleUri(ip, port, uri, metadata)
-        } else if (canQueue) {
-            playContainerFromQueue(ip, port, uri, metadata, coordinatorUuid!!)
-        } else {
-            false
+        Log.w(TAG, "Favorite primary path (queue=$preferQueue) rejected — trying fallback")
+        val fallback = when {
+            preferQueue -> playSingleUri(ip, port, uri, metadata)
+            canQueue -> playContainerFromQueue(ip, port, uri, metadata, coordinatorUuid!!)
+            else -> return false
         }
+        return when (fallback) {
+            CommandTransportOutcome.ACKNOWLEDGED -> true
+            CommandTransportOutcome.UNKNOWN -> confirmPlaying(ip, port)
+            CommandTransportOutcome.REJECTED -> false
+        }
+    }
+
+    /**
+     * Settles a favorite whose last step lost its response. Starting a streamed
+     * favorite from idle can outlast the reply, so give the speaker a few seconds
+     * to report PLAYING before calling it a failure.
+     */
+    private suspend fun confirmPlaying(ip: String, port: Int): Boolean {
+        repeat(FAVORITE_CONFIRM_ATTEMPTS) { attempt ->
+            if (attempt > 0) delay(FAVORITE_CONFIRM_INTERVAL_MS)
+            val state = getTransportInfo(ip, port)?.state
+            Log.d(TAG, "playFavorite: confirming — transport=$state")
+            if (state == "PLAYING" || state == "TRANSITIONING") return true
+        }
+        return false
     }
 
     /** True if the favorite references a container (playlist/album/station list). */
@@ -614,27 +641,35 @@ class SonosControlActions(
         uri.startsWith("x-rincon-cpcontainer:") ||
             metadata.contains("object.container", ignoreCase = true)
 
-    /** Sets the transport URI to a single item and presses play. */
+    /**
+     * Sets the transport URI to a single item and presses play.
+     *
+     * Both steps use the slow profile: from idle, the speaker resolves the
+     * stream with the music service before it answers, which routinely outlasts
+     * the 1.5s fail-fast budget and surfaced as a false "command failed".
+     */
     private suspend fun playSingleUri(
         ip: String,
         port: Int,
         uri: String,
         metadata: String
-    ): Boolean {
-        val set = invokeSimple(
+    ): CommandTransportOutcome {
+        val set = invokeSimpleOutcome(
             ip, port,
             SonosSoapClient.Service.AV_TRANSPORT, "SetAVTransportURI",
             listOf(
                 "InstanceID" to INSTANCE_ID,
                 "CurrentURI" to uri,
                 "CurrentURIMetaData" to metadata
-            )
+            ),
+            priority = SonosSoapClient.Priority.SLOW_COMMAND
         )
-        if (!set) return false
-        return invokeSimple(
+        if (set == CommandTransportOutcome.REJECTED) return set
+        return invokeSimpleOutcome(
             ip, port,
             SonosSoapClient.Service.AV_TRANSPORT, "Play",
-            listOf("InstanceID" to INSTANCE_ID, "Speed" to "1")
+            listOf("InstanceID" to INSTANCE_ID, "Speed" to "1"),
+            priority = SonosSoapClient.Priority.SLOW_COMMAND
         )
     }
 
@@ -649,7 +684,7 @@ class SonosControlActions(
         uri: String,
         metadata: String,
         coordinatorUuid: String
-    ): Boolean {
+    ): CommandTransportOutcome {
         // Clearing the queue is best-effort; an empty queue still returns success.
         // Use the slow profile — clearing a multi-thousand-track queue isn't instant.
         invokeSimple(
@@ -661,8 +696,9 @@ class SonosControlActions(
 
         // Enqueuing a large playlist makes the speaker pull every track from the
         // music service — thousands of tracks can take 10-30s. Needs the long
-        // read timeout, or it false-fails with "command failed".
-        val added = invokeSimple(
+        // read timeout, or it false-fails with "command failed". A lost response
+        // still carries on: the speaker may well have filled the queue.
+        val added = invokeSimpleOutcome(
             ip, port,
             SonosSoapClient.Service.AV_TRANSPORT, "AddURIToQueue",
             listOf(
@@ -674,27 +710,35 @@ class SonosControlActions(
             ),
             priority = SonosSoapClient.Priority.SLOW_COMMAND
         )
-        if (!added) {
-            Log.w(TAG, "AddURIToQueue failed for container favorite")
-            return false
+        if (added == CommandTransportOutcome.REJECTED) {
+            Log.w(TAG, "AddURIToQueue rejected for container favorite")
+            return added
         }
 
-        val pointed = invokeSimple(
+        // Switching a soundbar off its TV input, or waking an idle speaker, can
+        // take longer than the fail-fast budget — these get the slow profile too.
+        val pointed = invokeSimpleOutcome(
             ip, port,
             SonosSoapClient.Service.AV_TRANSPORT, "SetAVTransportURI",
             listOf(
                 "InstanceID" to INSTANCE_ID,
                 "CurrentURI" to "x-rincon-queue:$coordinatorUuid#0",
                 "CurrentURIMetaData" to ""
-            )
+            ),
+            priority = SonosSoapClient.Priority.SLOW_COMMAND
         )
-        if (!pointed) return false
+        if (pointed == CommandTransportOutcome.REJECTED) return pointed
 
-        return invokeSimple(
+        val played = invokeSimpleOutcome(
             ip, port,
             SonosSoapClient.Service.AV_TRANSPORT, "Play",
-            listOf("InstanceID" to INSTANCE_ID, "Speed" to "1")
+            listOf("InstanceID" to INSTANCE_ID, "Speed" to "1"),
+            priority = SonosSoapClient.Priority.SLOW_COMMAND
         )
+        // A step whose reply was lost leaves the whole attempt unconfirmed.
+        return if (played == CommandTransportOutcome.ACKNOWLEDGED &&
+            (added == CommandTransportOutcome.UNKNOWN || pointed == CommandTransportOutcome.UNKNOWN)
+        ) CommandTransportOutcome.UNKNOWN else played
     }
 
     /**

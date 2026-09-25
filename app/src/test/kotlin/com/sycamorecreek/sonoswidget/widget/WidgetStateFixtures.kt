@@ -63,7 +63,7 @@ object WidgetStateFixtures {
     val loadingFavorite = idle.copy(
         pendingOperations = listOf(PendingWidgetOperation("favorite-1", WidgetOperationType.LOADING_FAVORITE))
     )
-    val failedCommand = playing.copy(errorMessage = "Couldn't confirm command — check status")
+    val failedCommand = playing.copy(errorMessage = "Couldn't confirm command")
     val missingArtwork = playing.copy(
         currentTrack = playing.currentTrack.copy(artUrl = null),
         artworkVersion = null

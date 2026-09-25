@@ -1515,7 +1515,7 @@ class SonosRepository private constructor(
                 startedAtMs = System.currentTimeMillis()
             )
         ))
-        val ok = executeLocalAndPoll { ip, port ->
+        val ok = executeLocalAndPoll("Couldn't start ${fav.title}") { ip, port ->
             controller.playFavorite(ip, port, fav.uri, fav.metadata, coordinatorUuid)
         }
         if (!ok) {
@@ -1919,12 +1919,12 @@ class SonosRepository private constructor(
             // A timeout can occur after a speaker acts. Preserve the newest
             // intent and make the next action an explicit status check.
             recordUnknownCommand()
-            pushErrorMessage("Couldn't confirm command — check status")
+            pushErrorMessage("Couldn't confirm command")
             return CommandOutcome.UNKNOWN
         }
 
         if (result == CommandTransportOutcome.REJECTED) {
-            pushErrorMessage("Command failed — check status")
+            pushErrorMessage("Command failed")
             return CommandOutcome.DEFINITE_FAILURE
         }
 
@@ -1978,6 +1978,7 @@ class SonosRepository private constructor(
     }
 
     private suspend fun executeLocalAndPoll(
+        failureMessage: String = "Command failed",
         command: suspend (ip: String, port: Int) -> Boolean
     ): Boolean {
         val ip = activeSpeakerIp
@@ -1994,7 +1995,7 @@ class SonosRepository private constructor(
             // rather than padding every command with a fixed delay.
             pollAndUpdate()
         } else {
-            pushErrorMessage("Command failed \u2014 tap to retry")
+            pushErrorMessage(failureMessage)
         }
         return success
     }
