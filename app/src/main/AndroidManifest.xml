@@ -65,13 +65,6 @@
                     android:host="sycamorecreekconsulting.com"
                     android:path="/callback" />
             </intent-filter>
-            <!-- Custom scheme fallback for OAuth (if App Links verification fails) -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="sonoswidget" android:host="callback" />
-            </intent-filter>
         </activity>
 
         <!-- Playback polling service (Task 1.5) -->

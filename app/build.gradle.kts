@@ -25,7 +25,6 @@ android {
         versionName = "1.0.0"
 
         buildConfigField("String", "SONOS_CLIENT_ID", "\"${localProps.getProperty("SONOS_CLIENT_ID", "")}\"")
-        buildConfigField("String", "SONOS_CLIENT_SECRET", "\"${localProps.getProperty("SONOS_CLIENT_SECRET", "")}\"")
     }
 
     buildTypes {
