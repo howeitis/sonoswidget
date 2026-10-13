@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Keep the OAuth token store out of cloud backup and device-to-device transfer.
+  It is encrypted with a key that lives in this device's Android Keystore and is
+  never backed up, so a restored copy can never be decrypted on another device;
+  restoring it only leaves an unreadable file behind. Tokens are re-obtained by
+  signing in again. Everything else backs up as before.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="sonos_oauth_tokens.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="sonos_oauth_tokens.xml" />
+    </device-transfer>
+</data-extraction-rules>

@@ -21,7 +21,8 @@ import java.util.concurrent.TimeUnit
  * 1. [launchLogin] opens a Custom Tab to the Sonos authorization endpoint
  * 2. User signs in and grants access
  * 3. Sonos redirects to https://sycamorecreekconsulting.com/callback?code=...&state=...
- * 4. [handleCallback] exchanges the authorization code for tokens
+ * 4. [handleCallback] exchanges the authorization code for tokens via the
+ *    site's token proxy, which holds the client secret (see [TOKEN_URL])
  * 5. Tokens are stored securely in [TokenStore]
  *
  * Token refresh is handled automatically by [ensureValidToken].
@@ -39,11 +40,15 @@ class SonosOAuthManager(
 
         // Sonos OAuth endpoints
         private const val AUTH_BASE = "https://api.sonos.com/login/v3/oauth"
-        private const val TOKEN_URL = "https://api.sonos.com/login/v3/oauth/access"
 
-        // App credentials — loaded from local.properties via BuildConfig (gitignored)
+        // Token exchange and refresh go through a server-side proxy
+        // (sycamore-creek repo, api/sonos/token.js) that adds the client
+        // secret. A secret compiled into the APK could be extracted by anyone
+        // holding the APK, so the app ships only the public client id.
+        private const val TOKEN_URL = "https://sycamorecreekconsulting.com/api/sonos/token"
+
+        // Public client id (local.properties via BuildConfig); used in the login URL.
         val CLIENT_ID = BuildConfig.SONOS_CLIENT_ID
-        val CLIENT_SECRET = BuildConfig.SONOS_CLIENT_SECRET
 
         const val REDIRECT_URI = "https://sycamorecreekconsulting.com/callback"
         private const val SCOPE = "playback-control-all"
@@ -91,12 +96,10 @@ class SonosOAuthManager(
         val formBody = FormBody.Builder()
             .add("grant_type", "authorization_code")
             .add("code", code)
-            .add("redirect_uri", REDIRECT_URI)
             .build()
 
         val request = Request.Builder()
             .url(TOKEN_URL)
-            .addHeader("Authorization", okhttp3.Credentials.basic(CLIENT_ID, CLIENT_SECRET))
             .addHeader("Content-Type", "application/x-www-form-urlencoded")
             .post(formBody)
             .build()
@@ -149,7 +152,6 @@ class SonosOAuthManager(
 
         val request = Request.Builder()
             .url(TOKEN_URL)
-            .addHeader("Authorization", okhttp3.Credentials.basic(CLIENT_ID, CLIENT_SECRET))
             .addHeader("Content-Type", "application/x-www-form-urlencoded")
             .post(formBody)
             .build()

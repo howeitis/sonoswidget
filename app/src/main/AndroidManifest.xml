@@ -38,6 +38,7 @@
     <application
         android:name=".app.SonosApplication"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
@@ -64,13 +65,6 @@
                     android:scheme="https"
                     android:host="sycamorecreekconsulting.com"
                     android:path="/callback" />
-            </intent-filter>
-            <!-- Custom scheme fallback for OAuth (if App Links verification fails) -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="sonoswidget" android:host="callback" />
             </intent-filter>
         </activity>
 

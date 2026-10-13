@@ -43,11 +43,13 @@ bytecode continues to target Java 17.
 
 APK output: `app/build/outputs/apk/debug/app-debug.apk`
 
-For Sonos Cloud API support, add to `local.properties`:
+For Sonos Cloud API support, add the public client id to `local.properties`:
 ```properties
 SONOS_CLIENT_ID=your_client_id
-SONOS_CLIENT_SECRET=your_client_secret
 ```
+The client secret is not part of the app. It lives in the website's Vercel
+environment, where the token proxy (`/api/sonos/token`) adds it to token
+requests.
 
 No credentials are needed to build the debug variant.
 

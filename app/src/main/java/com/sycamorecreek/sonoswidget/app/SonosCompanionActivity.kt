@@ -289,8 +289,7 @@ class SonosCompanionActivity : ComponentActivity() {
         val data = intent?.data ?: return
 
         val isHttpsCallback = data.scheme == "https" && data.host == "sycamorecreekconsulting.com" && data.path == "/callback"
-        val isCustomCallback = data.scheme == "sonoswidget" && data.host == "callback"
-        if (isHttpsCallback || isCustomCallback) {
+        if (isHttpsCallback) {
             val code = data.getQueryParameter("code")
             val state = data.getQueryParameter("state")
             val error = data.getQueryParameter("error")

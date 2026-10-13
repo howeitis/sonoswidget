@@ -179,9 +179,14 @@ fifteen minutes. Use `deserialize` for round-trip fidelity (tests, fixtures) and
 
 ## OAuth Setup
 
-Sonos Cloud API requires OAuth credentials in `local.properties`:
+Sonos Cloud API needs only the public client id in `local.properties`:
 ```properties
 SONOS_CLIENT_ID=your_client_id
-SONOS_CLIENT_SECRET=your_client_secret
 ```
-Redirect URI configured at: `https://sycamorecreekconsulting.com/sonos/callback`
+The client secret never ships in the APK. Token exchange and refresh go through
+`https://sycamorecreekconsulting.com/api/sonos/token` (sycamore-creek repo,
+`api/sonos/token.js`), which adds the secret from the Vercel environment
+variables `SONOS_CLIENT_ID` and `SONOS_CLIENT_SECRET`. Do not reintroduce a
+`SONOS_CLIENT_SECRET` BuildConfig field.
+
+Redirect URI (registered with Sonos, verified App Link): `https://sycamorecreekconsulting.com/callback`
