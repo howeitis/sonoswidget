@@ -14,7 +14,10 @@ import androidx.security.crypto.MasterKey
  *   - Refresh token (long-lived, used to obtain new access tokens)
  *   - Expiry timestamp (epoch millis when the access token expires)
  *
- * All values are encrypted at rest using AES-256 GCM.
+ * All values are encrypted at rest using AES-256 GCM. The store never falls
+ * back to plaintext: if the encrypted file cannot be opened it is discarded and
+ * recreated, and if that fails too, nothing is persisted (the user signs in
+ * again) rather than writing tokens in the clear.
  */
 class TokenStore(context: Context) {
 
@@ -28,34 +31,51 @@ class TokenStore(context: Context) {
         private const val EXPIRY_BUFFER_MS = 60_000L // refresh 1 minute before actual expiry
     }
 
-    private val prefs: SharedPreferences = try {
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            context,
-            PREFS_FILE,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    } catch (e: Exception) {
-        Log.e(TAG, "Failed to create EncryptedSharedPreferences, falling back to clear", e)
-        context.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+    /** Null only if a fresh encrypted store could not be created; reads then return nothing and writes are dropped. */
+    private val prefs: SharedPreferences? = openEncrypted(context)
+
+    private fun openEncrypted(context: Context): SharedPreferences? {
+        val create = {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                context,
+                PREFS_FILE,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }
+        return try {
+            create()
+        } catch (e: Exception) {
+            // Typically AEADBadTagException: the file's keysets were sealed by a
+            // Keystore key this device does not have (restored from a backup or
+            // device transfer). Nothing in it is recoverable, so start fresh.
+            Log.w(TAG, "Encrypted token store unreadable; discarding and recreating", e)
+            context.deleteSharedPreferences(PREFS_FILE)
+            try {
+                create()
+            } catch (e2: Exception) {
+                Log.e(TAG, "Encrypted token store unavailable; tokens will not be persisted", e2)
+                null
+            }
+        }
     }
 
     val accessToken: String?
-        get() = prefs.getString(KEY_ACCESS_TOKEN, null)
+        get() = prefs?.getString(KEY_ACCESS_TOKEN, null)
 
     val refreshToken: String?
-        get() = prefs.getString(KEY_REFRESH_TOKEN, null)
+        get() = prefs?.getString(KEY_REFRESH_TOKEN, null)
 
     val isLoggedIn: Boolean
         get() = refreshToken != null
 
     val isAccessTokenExpired: Boolean
         get() {
-            val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
+            val expiresAt = prefs?.getLong(KEY_EXPIRES_AT, 0L) ?: 0L
             return System.currentTimeMillis() >= (expiresAt - EXPIRY_BUFFER_MS)
         }
 
@@ -68,11 +88,11 @@ class TokenStore(context: Context) {
      */
     fun saveTokens(accessToken: String, refreshToken: String, expiresInSeconds: Long) {
         val expiresAt = System.currentTimeMillis() + (expiresInSeconds * 1000)
-        prefs.edit()
-            .putString(KEY_ACCESS_TOKEN, accessToken)
-            .putString(KEY_REFRESH_TOKEN, refreshToken)
-            .putLong(KEY_EXPIRES_AT, expiresAt)
-            .apply()
+        prefs?.edit()
+            ?.putString(KEY_ACCESS_TOKEN, accessToken)
+            ?.putString(KEY_REFRESH_TOKEN, refreshToken)
+            ?.putLong(KEY_EXPIRES_AT, expiresAt)
+            ?.apply()
         Log.d(TAG, "Tokens saved, expires in ${expiresInSeconds}s")
     }
 
@@ -82,7 +102,7 @@ class TokenStore(context: Context) {
      */
     fun updateAccessToken(accessToken: String, expiresInSeconds: Long, newRefreshToken: String? = null) {
         val expiresAt = System.currentTimeMillis() + (expiresInSeconds * 1000)
-        prefs.edit().apply {
+        prefs?.edit()?.apply {
             putString(KEY_ACCESS_TOKEN, accessToken)
             putLong(KEY_EXPIRES_AT, expiresAt)
             if (newRefreshToken != null) {
@@ -94,7 +114,7 @@ class TokenStore(context: Context) {
     }
 
     fun clearTokens() {
-        prefs.edit().clear().apply()
+        prefs?.edit()?.clear()?.apply()
         Log.d(TAG, "All tokens cleared")
     }
 
@@ -104,9 +124,9 @@ class TokenStore(context: Context) {
     // ──────────────────────────────────────────────
 
     var pendingOAuthState: String?
-        get() = prefs.getString(KEY_PENDING_OAUTH_STATE, null)
+        get() = prefs?.getString(KEY_PENDING_OAUTH_STATE, null)
         set(value) {
-            prefs.edit().apply {
+            prefs?.edit()?.apply {
                 if (value == null) remove(KEY_PENDING_OAUTH_STATE)
                 else putString(KEY_PENDING_OAUTH_STATE, value)
                 apply()
